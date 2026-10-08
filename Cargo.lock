@@ -2520,28 +2520,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "whatsapp-rust-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "console",
- "dialoguer",
- "dirs",
- "env_logger",
- "log",
- "qrcode",
- "rmcp",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "whatsapp-rust",
-]
-
-[[package]]
 name = "whatsapp-rust-sqlite-storage"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2781,6 +2759,28 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure",
+]
+
+[[package]]
+name = "zap-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "console",
+ "dialoguer",
+ "dirs",
+ "env_logger",
+ "log",
+ "qrcode",
+ "rmcp",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "whatsapp-rust",
 ]
 
 [[package]]

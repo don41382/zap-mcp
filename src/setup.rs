@@ -17,9 +17,9 @@ pub const DISCLAIMER: &str = include_str!("../DISCLAIMER.md");
 const TERMS_VERSION: &str = "1";
 const SERVER_NAME: &str = "whatsapp";
 const EXE_NAME: &str = if cfg!(windows) {
-    "whatsapp-rust-mcp.exe"
+    "zap-mcp.exe"
 } else {
-    "whatsapp-rust-mcp"
+    "zap-mcp"
 };
 
 fn theme() -> ColorfulTheme {
@@ -67,7 +67,7 @@ fn install_dir() -> Result<PathBuf> {
         Ok(dirs::data_local_dir()
             .context("cannot find %LOCALAPPDATA%")?
             .join("Programs")
-            .join("whatsapp-rust-mcp"))
+            .join("zap-mcp"))
     } else {
         Ok(dirs::home_dir()
             .context("cannot find home directory")?
@@ -257,7 +257,7 @@ pub async fn run(paths: &Paths, custom_data_dir: Option<&Path>) -> Result<()> {
 
 async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) -> Result<()> {
     eprintln!(
-        "\nwhatsapp-rust-mcp {} setup\n\
+        "\nzap-mcp {} setup\n\
          Gives Claude access to your WhatsApp messages through a linked device.",
         env!("CARGO_PKG_VERSION")
     );

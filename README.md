@@ -1,4 +1,6 @@
-# whatsapp-rust-mcp
+# zap-mcp
+
+**An unofficial MCP server for WhatsApp messages.** Lets Claude read (and, if you allow it, send) your WhatsApp chats.
 
 > [!CAUTION]
 > **Unofficial software. Use entirely at your own risk.**
@@ -46,16 +48,16 @@ the MCP server.
 
    | System | File |
    |---|---|
-   | Mac with Apple Silicon (M1 or newer) | `whatsapp-rust-mcp-aarch64-apple-darwin.tar.gz` |
-   | Mac with Intel | `whatsapp-rust-mcp-x86_64-apple-darwin.tar.gz` |
-   | Windows (64-bit) | `whatsapp-rust-mcp-x86_64-pc-windows-msvc.zip` |
+   | Mac with Apple Silicon (M1 or newer) | `zap-mcp-aarch64-apple-darwin.tar.gz` |
+   | Mac with Intel | `zap-mcp-x86_64-apple-darwin.tar.gz` |
+   | Windows (64-bit) | `zap-mcp-x86_64-pc-windows-msvc.zip` |
 
-2. Start `whatsapp-rust-mcp` (macOS: double-click it, or run `./whatsapp-rust-mcp`
-   in Terminal; Windows: double-click `whatsapp-rust-mcp.exe`). Setup walks you
+2. Start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
+   in Terminal; Windows: double-click `zap-mcp.exe`). Setup walks you
    through four steps:
    1. **Disclaimer.** You must read and accept it to continue.
    2. **Install.** Copies the program to `~/.local/bin` (macOS) or
-      `%LOCALAPPDATA%\Programs\whatsapp-rust-mcp` (Windows).
+      `%LOCALAPPDATA%\Programs\zap-mcp` (Windows).
    3. **Connect to Claude.** Asks whether Claude may send messages, then adds
       the server to Claude Code and/or Claude Desktop if they're installed.
       Your existing Claude Desktop config is kept, with a backup next to it.
@@ -81,15 +83,15 @@ releases aren't code-signed.
 Subcommands, if you'd rather not use the guided setup:
 
 ```sh
-whatsapp-rust-mcp setup                 # the guided installer (same as double-click)
-whatsapp-rust-mcp login [--qr | --phone +4915112345678]   # only link WhatsApp
-whatsapp-rust-mcp serve [--allow-send]  # the MCP server on stdio
+zap-mcp setup                 # the guided installer (same as double-click)
+zap-mcp login [--qr | --phone +4915112345678]   # only link WhatsApp
+zap-mcp serve [--allow-send]  # the MCP server on stdio
 ```
 
 Register the server yourself:
 
 ```sh
-claude mcp add -s user whatsapp -- ~/.local/bin/whatsapp-rust-mcp serve
+claude mcp add -s user whatsapp -- ~/.local/bin/zap-mcp serve
 ```
 
 Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -98,12 +100,12 @@ or `%APPDATA%\Claude\claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "whatsapp": { "command": "/Users/<you>/.local/bin/whatsapp-rust-mcp", "args": ["serve"] }
+    "whatsapp": { "command": "/Users/<you>/.local/bin/zap-mcp", "args": ["serve"] }
   }
 }
 ```
 
-Any other MCP client: run `whatsapp-rust-mcp serve` over stdio.
+Any other MCP client: run `zap-mcp serve` over stdio.
 
 </details>
 
@@ -115,7 +117,7 @@ macOS, Visual Studio Build Tools on Windows).
 
 ```sh
 cargo build --release
-./target/release/whatsapp-rust-mcp     # runs setup
+./target/release/zap-mcp     # runs setup
 ```
 
 The `simd` feature of whatsapp-rust needs nightly Rust, so it's turned off in `Cargo.toml`.
@@ -124,8 +126,9 @@ The `simd` feature of whatsapp-rust needs nightly Rust, so it's turned off in `C
 
 ## Data and multiple instances
 
-Everything lives in `~/.whatsapp-rust-mcp/` (Windows: `%USERPROFILE%\.whatsapp-rust-mcp`),
-which you can override with `--data-dir` or `WHATSAPP_MCP_DATA_DIR`:
+Everything lives in `~/.zap-mcp/` (Windows: `%USERPROFILE%\.zap-mcp`). Data from
+versions before the rename (`~/.whatsapp-rust-mcp`) is moved there automatically.
+You can override the location with `--data-dir` or `ZAP_MCP_DATA_DIR`:
 
 - `session.db` holds the linked device's encryption keys. Anyone with this
   file can read and send your messages, so treat it like a password.
@@ -152,7 +155,7 @@ days; if that happens, run setup again.
 
 1. On your phone, remove the device under Linked Devices.
 2. Run `claude mcp remove whatsapp -s user`, and delete the `whatsapp` entry from Claude Desktop's config.
-3. Delete the program and the `.whatsapp-rust-mcp` data folder.
+3. Delete the program and the `.zap-mcp` data folder.
 
 ## Development
 

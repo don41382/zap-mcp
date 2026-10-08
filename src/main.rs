@@ -33,8 +33,8 @@ use crate::store::Store;
 )]
 struct Cli {
     /// Where the session keys and message archive live
-    /// (default: ~/.whatsapp-rust-mcp).
-    #[arg(long, env = "WHATSAPP_MCP_DATA_DIR", global = true)]
+    /// (default: ~/.zap-mcp).
+    #[arg(long, env = "ZAP_MCP_DATA_DIR", global = true)]
     data_dir: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -74,9 +74,7 @@ impl Paths {
     fn new(dir: Option<PathBuf>) -> Result<Self> {
         let dir = match dir {
             Some(d) => d,
-            None => dirs::home_dir()
-                .context("cannot determine home directory; pass --data-dir")?
-                .join(".whatsapp-rust-mcp"),
+            None => default_data_dir()?,
         };
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("creating data dir {}", dir.display()))?;
@@ -87,6 +85,35 @@ impl Paths {
             lock: dir.join("session.lock"),
             terms: dir.join("terms-accepted.txt"),
         })
+    }
+}
+
+/// `~/.zap-mcp`, moving the data over from the pre-rename `~/.whatsapp-rust-mcp`
+/// the first time. The move only happens while no process holds the old
+/// session lock (moving files out from under a running server would make it
+/// recreate empty databases); until then the old directory keeps being used.
+fn default_data_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("cannot determine home directory; pass --data-dir")?;
+    let dir = home.join(".zap-mcp");
+    let legacy = home.join(".whatsapp-rust-mcp");
+    if dir.exists() || !legacy.exists() {
+        return Ok(dir);
+    }
+    match try_lock(&legacy.join("session.lock")) {
+        Ok(Some(lock)) => {
+            drop(lock);
+            match std::fs::rename(&legacy, &dir) {
+                Ok(()) => {
+                    info!("moved data from {} to {}", legacy.display(), dir.display());
+                    Ok(dir)
+                }
+                Err(e) => {
+                    warn!("could not move {} to {}: {e}", legacy.display(), dir.display());
+                    Ok(legacy)
+                }
+            }
+        }
+        _ => Ok(legacy),
     }
 }
 
@@ -138,7 +165,7 @@ fn main() -> Result<()> {
     // stdout is the MCP channel, so all logging goes to stderr. Keep the
     // library quiet during interactive use; the prompts are the UI.
     let default_filter = match command {
-        Command::Serve { .. } => "warn,whatsapp_rust_mcp=info",
+        Command::Serve { .. } => "warn,zap_mcp=info",
         _ => "error",
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
@@ -168,7 +195,7 @@ async fn login(paths: &Paths, phone: Option<String>, qr: bool) -> Result<()> {
     setup::ensure_terms_accepted(paths)?;
     let Some(_lock) = try_lock(&paths.lock)? else {
         bail!(
-            "another whatsapp-rust-mcp process is using the session (probably the MCP server \
+            "another zap-mcp process is using the session (probably the MCP server \
              inside Claude). Quit it first, then run login again."
         );
     };
@@ -198,10 +225,10 @@ async fn serve(paths: &Paths, allow_send: bool) -> Result<()> {
         let builder = Bot::builder()
             .with_backend(session_store(paths).await?)
             .on_qr_code(|_, _| async {
-                warn!("WhatsApp is not linked; run `whatsapp-rust-mcp setup` in a terminal");
+                warn!("WhatsApp is not linked; run `zap-mcp setup` in a terminal");
             })
             .on_logged_out(|_| async {
-                warn!("WhatsApp session was logged out; run `whatsapp-rust-mcp setup` again");
+                warn!("WhatsApp session was logged out; run `zap-mcp setup` again");
             });
         let bot = ingest::register(builder, store.clone())
             .build()

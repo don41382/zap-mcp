@@ -232,14 +232,14 @@ impl WhatsAppServer {
                 status["own_number"] = json!(client.pn().map(|j| format!("+{}", j.user)));
                 if !client.is_logged_in() {
                     status["hint"] = json!(
-                        "Not linked yet. Run `whatsapp-rust-mcp setup` (or just open the program) in a terminal to link your phone."
+                        "Not linked yet. Run `zap-mcp setup` (or just open the program) in a terminal to link your phone."
                     );
                 }
             }
             Session::ReadOnly => {
                 status["mode"] = json!("read-only");
                 status["hint"] = json!(
-                    "Another whatsapp-rust-mcp process owns the WhatsApp session; this one serves the shared archive (new messages appear as that process receives them)."
+                    "Another zap-mcp process owns the WhatsApp session; this one serves the shared archive (new messages appear as that process receives them)."
                 );
             }
         }
@@ -343,7 +343,7 @@ impl WhatsAppServer {
             return Err(invalid("sending is not available in read-only mode"));
         };
         if !client.is_logged_in() {
-            return Err(invalid("WhatsApp is not linked; run `whatsapp-rust-mcp setup` in a terminal"));
+            return Err(invalid("WhatsApp is not linked; run `zap-mcp setup` in a terminal"));
         }
         if p.text.trim().is_empty() {
             return Err(invalid("text must not be empty"));

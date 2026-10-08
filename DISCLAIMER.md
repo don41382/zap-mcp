@@ -1,6 +1,6 @@
 # DISCLAIMER: USE AT YOUR OWN RISK
 
-whatsapp-rust-mcp is an UNOFFICIAL, independent open-source project. It is NOT
+zap-mcp is an UNOFFICIAL, independent open-source project. It is NOT
 affiliated with, authorized, maintained, sponsored, or endorsed by WhatsApp LLC,
 Meta Platforms, Inc., or any of their affiliates. "WhatsApp" is a trademark of
 WhatsApp LLC and is used here only to describe what this software works with.

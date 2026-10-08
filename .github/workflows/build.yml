@@ -66,9 +66,9 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          name="whatsapp-rust-mcp-${{ matrix.target }}"
+          name="zap-mcp-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/whatsapp-rust-mcp" README.md DISCLAIMER.md LICENSE THIRD_PARTY_LICENSES.html "dist/$name/"
+          cp "target/${{ matrix.target }}/release/zap-mcp" README.md DISCLAIMER.md LICENSE THIRD_PARTY_LICENSES.html "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           echo "ASSET=dist/$name.tar.gz" >> "$GITHUB_ENV"
 
@@ -76,15 +76,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "whatsapp-rust-mcp-${{ matrix.target }}"
+          $name = "zap-mcp-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/$name" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/whatsapp-rust-mcp.exe", README.md, DISCLAIMER.md, LICENSE, THIRD_PARTY_LICENSES.html "dist/$name/"
+          Copy-Item "target/${{ matrix.target }}/release/zap-mcp.exe", README.md, DISCLAIMER.md, LICENSE, THIRD_PARTY_LICENSES.html "dist/$name/"
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
           "ASSET=dist/$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - uses: actions/upload-artifact@v4
         with:
-          name: whatsapp-rust-mcp-${{ matrix.target }}
+          name: zap-mcp-${{ matrix.target }}
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
