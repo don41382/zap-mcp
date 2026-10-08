@@ -1,6 +1,6 @@
 [package]
 name = "zap-mcp"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
 description = "Unofficial MCP server for WhatsApp messages (use at your own risk)"

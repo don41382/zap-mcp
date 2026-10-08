@@ -77,10 +77,15 @@ Codex windows share.
 
 3. Start Claude or Codex and ask something like *"What did I miss on WhatsApp today?"*
 
-**Updating:** download the new version and start it the same way. Setup
-detects the existing installation and offers **Update**: it replaces the
-program and restarts the background service, keeping your settings, app
-registrations and WhatsApp link. Claude and Codex reconnect by themselves.
+**Updating or uninstalling:** start zap-mcp again (the new version, or the
+installed one). It detects the existing installation and offers:
+- **Update**: replaces the program and restarts the background service,
+  keeping your settings, app registrations and WhatsApp link. Claude and
+  Codex reconnect by themselves.
+- **Change settings**: runs the full setup again.
+- **Uninstall**: stops the service and removes it from start-at-login, Claude
+  and Codex. It asks whether to also delete your message archive and WhatsApp
+  session (default: keep) and whether to remove the program.
 
 **ChatGPT** (the chat, not Codex) can only use MCP servers that are reachable
 on the internet, not ones on your computer. Making your WhatsApp archive
@@ -103,7 +108,7 @@ zap-mcp status      # is the service running, is WhatsApp linked and connected
 zap-mcp login [--qr | --phone +4915112345678]   # only (re-)link WhatsApp
 zap-mcp daemon      # run the background service in the foreground (logs to stderr)
 zap-mcp serve       # stdio MCP relay to the service, for clients that launch commands
-zap-mcp uninstall   # stop the service, remove start-at-login and app registrations
+zap-mcp uninstall [--purge]   # remove service, start-at-login, app registrations (--purge: and data)
 ```
 
 The service listens on `http://127.0.0.1:<port>/mcp`. The port and the access
@@ -198,10 +203,12 @@ connects. If WhatsApp ever unlinks the device, run `zap-mcp login` (or setup) ag
 
 ### Uninstall
 
-1. Run `zap-mcp uninstall`. It stops the service, removes start-at-login, and
-   removes zap-mcp from Claude Code, Claude Desktop and Codex.
+1. Start zap-mcp and choose **Uninstall**, or run `zap-mcp uninstall` (add
+   `--purge` to also delete the message archive and WhatsApp session). Either
+   way it stops the service and removes zap-mcp from start-at-login, Claude
+   Code, Claude Desktop and Codex.
 2. On your phone, remove the device under WhatsApp → Linked Devices.
-3. Delete the program and the `.zap-mcp` data folder.
+3. If you kept them: delete the program and the `.zap-mcp` data folder.
 
 ## Development
 

@@ -142,13 +142,17 @@ fn cli_cmd(cli: &Path) -> Command {
         .extension()
         .and_then(OsStr::to_str)
         .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
-    if is_script {
+    let mut c = if is_script {
         let mut c = Command::new("cmd");
         c.arg("/C").arg(cli);
         c
     } else {
         Command::new(cli)
-    }
+    };
+    // Keep these tools away from our terminal: they may switch it to raw
+    // mode, after which our own prompts and "Press Enter" stop working.
+    c.stdin(std::process::Stdio::null());
+    c
 }
 
 /// Claude Code talks to the daemon directly over HTTP.
@@ -301,6 +305,13 @@ pub async fn run(paths: &Paths) -> Result<()> {
     // When double-clicked, the window closes as soon as we exit.
     eprintln!("\nPress Enter to close.");
     keys.enter().await;
+    if let Some(path) = DELETE_AFTER_EXIT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
+        delete_after_exit(&path);
+    }
     result
 }
 
@@ -508,13 +519,18 @@ async fn offer_update(paths: &Paths, current: &Path, dest: &Path) -> Result<bool
         .items([
             first.as_str(),
             "Change settings (run the full setup again)",
+            "Uninstall",
             "Close",
         ])
         .default(0)
         .interact()?;
     match choice {
         1 => return Ok(false),
-        2 => return Ok(true),
+        2 => {
+            interactive_uninstall(paths, dest).await?;
+            return Ok(true);
+        }
+        3 => return Ok(true),
         _ => {}
     }
 
@@ -536,9 +552,24 @@ async fn offer_update(paths: &Paths, current: &Path, dest: &Path) -> Result<bool
     Ok(true)
 }
 
-/// Stop the daemon, remove start-at-login and the Claude registrations.
-/// Leaves the data (and the WhatsApp link) in place.
-pub async fn uninstall(paths: &Paths) -> Result<()> {
+/// Stop the daemon, remove start-at-login and the app registrations. With
+/// `purge`, also delete the data dir (message archive and WhatsApp session).
+pub async fn uninstall(paths: &Paths, purge: bool) -> Result<()> {
+    remove_integrations(paths).await?;
+    if purge {
+        delete_data(paths)?;
+    } else {
+        eprintln!(
+            "\nYour data is still in {}.\n\
+             To remove everything: run `zap-mcp uninstall --purge`, unlink the device on your\n\
+             phone (WhatsApp > Linked Devices), and delete the zap-mcp program.",
+            paths.dir.display()
+        );
+    }
+    Ok(())
+}
+
+async fn remove_integrations(paths: &Paths) -> Result<()> {
     if daemon::stop(paths).await? {
         eprintln!("Stopped the background service.");
     }
@@ -564,12 +595,114 @@ pub async fn uninstall(paths: &Paths) -> Result<()> {
             eprintln!("Removed from Codex.");
         }
     }
+    Ok(())
+}
+
+fn delete_data(paths: &Paths) -> Result<()> {
+    std::fs::remove_dir_all(&paths.dir)
+        .with_context(|| format!("deleting {}", paths.dir.display()))?;
     eprintln!(
-        "\nYour data is still in {}.\n\
-         To remove everything: unlink the device on your phone (WhatsApp > Linked Devices),\n\
-         then delete that folder and the zap-mcp program.",
+        "Deleted {} (message archive and WhatsApp session).\n\
+         Also remove this computer on your phone: WhatsApp > Settings > Linked Devices.",
         paths.dir.display()
     );
+    Ok(())
+}
+
+/// A file to delete once this process has exited (our own executable).
+static DELETE_AFTER_EXIT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Delete the installed program (and leftovers from replacing it).
+fn delete_program(dest: &Path) {
+    let running_it = std::env::current_exe().is_ok_and(|c| same_file(&c, dest));
+    for path in [dest.to_path_buf(), dest.with_extension("old"), dest.with_extension("new")] {
+        if !path.exists() {
+            continue;
+        }
+        if running_it && path == dest {
+            // Windows can't delete a running .exe, and macOS is slow to let a
+            // process exit whose binary was just deleted: hand it to a helper
+            // that runs after we've exited.
+            *DELETE_AFTER_EXIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(path.clone());
+            eprintln!("{} will be removed when you close this window.", path.display());
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => eprintln!("Removed {}", path.display()),
+            Err(e) => eprintln!("Could not remove {} ({e}); delete it by hand.", path.display()),
+        }
+    }
+}
+
+/// Spawn a detached helper that deletes `path` shortly after we exit.
+fn delete_after_exit(path: &Path) {
+    #[cfg(unix)]
+    let spawned = {
+        use std::os::unix::process::CommandExt;
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; rm -f \"$0\"")
+            .arg(path)
+            .arg(std::process::id().to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+    };
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("cmd")
+            .raw_arg(format!(
+                "/C ping -n 3 127.0.0.1 >NUL & del /F /Q \"{}\"",
+                path.display()
+            ))
+            .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+            .spawn()
+    };
+    if spawned.is_err() {
+        eprintln!("Could not remove {}; delete it by hand.", path.display());
+    }
+}
+
+/// The interactive uninstall offered when zap-mcp is already installed.
+async fn interactive_uninstall(paths: &Paths, dest: &Path) -> Result<()> {
+    heading("Uninstall");
+    if !confirm(
+        "Uninstall zap-mcp? This stops the background service and removes it from \
+         Claude and Codex.",
+        false,
+    )? {
+        eprintln!("Nothing changed.");
+        return Ok(());
+    }
+    // Ask everything up front, then act.
+    let purge = confirm(
+        &format!(
+            "Also delete your message archive and WhatsApp session in {}? (cannot be undone)",
+            paths.dir.display()
+        ),
+        false,
+    )?;
+    let remove_program = confirm(&format!("Remove the program {}?", dest.display()), true)?;
+
+    remove_integrations(paths).await?;
+    if purge {
+        delete_data(paths)?;
+    } else {
+        eprintln!(
+            "Kept your data in {}. Running setup again later picks it up, still linked.",
+            paths.dir.display()
+        );
+    }
+    if remove_program {
+        delete_program(dest);
+    }
+    heading("Done");
+    eprintln!("zap-mcp is uninstalled. Restart Claude and Codex so they drop the old entry.");
     Ok(())
 }
 

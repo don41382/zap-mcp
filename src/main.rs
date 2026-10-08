@@ -74,9 +74,13 @@ enum Command {
     },
     /// Show whether the background service runs and WhatsApp is linked.
     Status,
-    /// Stop the background service, remove start-at-login and the Claude
-    /// registrations. Keeps your data.
-    Uninstall,
+    /// Stop the background service, remove start-at-login and the Claude /
+    /// Codex registrations. Keeps your data unless --purge.
+    Uninstall {
+        /// Also delete the message archive and WhatsApp session.
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 pub(crate) struct Paths {
@@ -236,7 +240,7 @@ fn main() -> Result<()> {
             Command::Daemon { allow_send, .. } => daemon::run(&paths, allow_send).await,
             Command::Serve { allow_send } => proxy::run(paths, allow_send).await,
             Command::Status => status(&paths).await,
-            Command::Uninstall => setup::uninstall(&paths).await,
+            Command::Uninstall { purge } => setup::uninstall(&paths, purge).await,
         }
     })
 }

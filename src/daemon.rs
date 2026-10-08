@@ -483,14 +483,16 @@ pub mod autostart {
     #[cfg(target_os = "macos")]
     pub fn uninstall() -> Result<bool> {
         let plist = plist_path()?;
+        // Only unload what we installed: the label is global to the login
+        // session, the plist is per home directory.
+        if !plist.exists() {
+            return Ok(false);
+        }
         let _ = Command::new("launchctl")
             .args(["bootout", &format!("{}/{LABEL}", gui_domain()?)])
             .output();
-        if plist.exists() {
-            std::fs::remove_file(&plist)?;
-            return Ok(true);
-        }
-        Ok(false)
+        std::fs::remove_file(&plist)?;
+        Ok(true)
     }
 
     #[cfg(target_os = "macos")]
