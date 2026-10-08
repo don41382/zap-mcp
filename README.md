@@ -32,7 +32,7 @@ with your own account only: no bulk, automated, or commercial messaging.
 | `get_messages` | One chat's messages by name, phone number, or JID, with optional `after`/`before` window |
 | `search_messages` | Substring search across all chats or one chat |
 | `recent_messages` | Everything since a given time (default: last 24h) |
-| `send_message` | Send a text message. **Off unless you allow it during setup** (`serve --allow-send`) |
+| `send_message` | Send a text message. **Off unless you allow it during setup** (`allow_send` in `settings.json`) |
 
 Media is listed by type and caption (`[image] menu`), not downloaded. Edits
 update the stored text; "delete for everyone" removes the stored text and keeps
@@ -41,8 +41,9 @@ a `[deleted]` marker.
 ## Install
 
 The program is its own installer. When **you** start it (double-click it, or
-run it in a terminal), it runs setup. When **Claude** starts it, it acts as
-the MCP server.
+run it in a terminal), it runs setup. Afterwards it runs as one small
+background service that keeps WhatsApp connected and that all Claude windows
+share.
 
 1. Download the file for your system from the repository's **Releases** page and unpack it:
 
@@ -52,16 +53,18 @@ the MCP server.
    | Mac with Intel | `zap-mcp-x86_64-apple-darwin.tar.gz` |
    | Windows (64-bit) | `zap-mcp-x86_64-pc-windows-msvc.zip` |
 
-2. Start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
-   in Terminal; Windows: double-click `zap-mcp.exe`). Setup walks you
-   through four steps:
+2. Quit Claude, then start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
+   in Terminal; Windows: double-click `zap-mcp.exe`). Setup walks you through
+   five steps:
    1. **Disclaimer.** You must read and accept it to continue.
    2. **Install.** Copies the program to `~/.local/bin` (macOS) or
       `%LOCALAPPDATA%\Programs\zap-mcp` (Windows).
-   3. **Connect to Claude.** Asks whether Claude may send messages, then adds
-      the server to Claude Code and/or Claude Desktop if they're installed.
-      Your existing Claude Desktop config is kept, with a backup next to it.
-   4. **Link WhatsApp.** You choose either:
+   3. **Options.** Whether Claude may send messages (default: no), and whether
+      the background service starts when you log in (recommended).
+   4. **Connect to Claude.** Adds zap-mcp to Claude Code and/or Claude Desktop
+      if they're installed. Your existing Claude Desktop config is kept, with a
+      backup next to it.
+   5. **Link WhatsApp.** You choose either:
       - **QR code:** WhatsApp → Settings → Linked Devices → Link a Device, then scan.
       - **Phone number:** setup shows an 8-character code, which you enter under
         Link a Device → "Link with phone number instead".
@@ -70,7 +73,11 @@ the MCP server.
       no new messages have arrived for a while. How much history you get is up
       to your phone; usually it's recent months.
 
-3. Restart Claude and ask something like *"What did I miss on WhatsApp today?"*
+   Finally it starts the background service and checks that it answers.
+
+3. Start Claude and ask something like *"What did I miss on WhatsApp today?"*
+
+Run `zap-mcp status` at any time to see whether the service is running and WhatsApp is connected.
 
 If macOS says the app "cannot be opened because the developer cannot be
 verified", right-click it → Open. On Windows, SmartScreen may show "Windows
@@ -78,24 +85,31 @@ protected your PC": click "More info" → "Run anyway". This only happens while
 releases aren't code-signed.
 
 <details>
-<summary><b>Manual setup / other MCP clients</b></summary>
-
-Subcommands, if you'd rather not use the guided setup:
+<summary><b>Commands / manual setup / other MCP clients</b></summary>
 
 ```sh
-zap-mcp setup                 # the guided installer (same as double-click)
-zap-mcp login [--qr | --phone +4915112345678]   # only link WhatsApp
-zap-mcp serve [--allow-send]  # the MCP server on stdio
+zap-mcp setup       # the guided installer (same as double-click)
+zap-mcp status      # is the service running, is WhatsApp linked and connected
+zap-mcp login [--qr | --phone +4915112345678]   # only (re-)link WhatsApp
+zap-mcp daemon      # run the background service in the foreground (logs to stderr)
+zap-mcp serve       # stdio MCP relay to the service, for clients that launch commands
+zap-mcp uninstall   # stop the service, remove start-at-login and Claude registrations
 ```
 
-Register the server yourself:
+The service listens on `http://127.0.0.1:<port>/mcp`. The port and the access
+token are in `~/.zap-mcp/settings.json`, along with `allow_send`; restart the
+service after you change them.
+
+Claude Code connects over HTTP:
 
 ```sh
-claude mcp add -s user whatsapp -- ~/.local/bin/zap-mcp serve
+claude mcp add -s user --transport http whatsapp http://127.0.0.1:<port>/mcp \
+  -H "Authorization: Bearer <token>"
 ```
 
 Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`
-or `%APPDATA%\Claude\claude_desktop_config.json`):
+or `%APPDATA%\Claude\claude_desktop_config.json`) can only launch commands, so
+it uses the relay, which starts the service if it isn't running:
 
 ```json
 {
@@ -105,7 +119,7 @@ or `%APPDATA%\Claude\claude_desktop_config.json`):
 }
 ```
 
-Any other MCP client: run `zap-mcp serve` over stdio.
+Any other MCP client: use the HTTP URL with the token, or run `zap-mcp serve` over stdio.
 
 </details>
 
@@ -124,7 +138,28 @@ The `simd` feature of whatsapp-rust needs nightly Rust, so it's turned off in `C
 
 </details>
 
-## Data and multiple instances
+## How it runs
+
+```
+Claude Code ──HTTP + token──┐
+                            ├──> zap-mcp daemon ──> WhatsApp
+Claude Desktop ──stdio──> zap-mcp serve (relay) ┘        │
+                                                    messages.db
+```
+
+- **One background service** (`zap-mcp daemon`) holds the WhatsApp connection
+  and serves MCP. It starts at login (macOS: LaunchAgent
+  `~/Library/LaunchAgents/dev.zap-mcp.daemon.plist`; Windows: a per-user Run
+  entry) and keeps saving new messages even while Claude is closed. That also
+  prevents WhatsApp from unlinking the device after about 14 days offline.
+- **Local only, token-protected.** It listens on `127.0.0.1` only, needs the
+  random token from `settings.json` on every request, accepts only loopback
+  `Host` headers, and rejects requests from web pages (any `Origin` header).
+  Other programs and websites can't reach your messages.
+- **One connection.** WhatsApp allows one connection per linked device. A
+  session lock makes sure only one service process ever connects.
+
+## Data
 
 Everything lives in `~/.zap-mcp/` (Windows: `%USERPROFILE%\.zap-mcp`). Data from
 versions before the rename (`~/.whatsapp-rust-mcp`) is moved there automatically.
@@ -133,28 +168,23 @@ You can override the location with `--data-dir` or `ZAP_MCP_DATA_DIR`:
 - `session.db` holds the linked device's encryption keys. Anyone with this
   file can read and send your messages, so treat it like a password.
 - `messages.db` is the message archive (plain SQLite, unencrypted).
-- `session.lock` makes sure only one process connects at a time.
+- `settings.json` holds the port, access token, and `allow_send`.
+- `daemon.log` is the service log; `daemon.pid` and `session.lock` are runtime files.
 - `terms-accepted.txt` records when you accepted the disclaimer, and for which version.
 
 On macOS the folder is restricted to your user (`0700`). Nothing is sent
-anywhere except to WhatsApp's servers and to the MCP client you connect. When
+anywhere except to WhatsApp's servers and to the MCP clients you connect. When
 Claude reads your messages, that content goes to Anthropic as part of your
 conversation.
 
-WhatsApp allows one connection per linked device. The first server process
-takes the lock and connects; any further instances (a second Claude window,
-Claude Desktop and Claude Code at once) run **read-only** on the shared
-archive with sending disabled. Linking won't start while a server holds the
-lock, so quit Claude first if you need to re-link.
-
-Messages that arrive while no server is running are delivered when it next
-connects. WhatsApp unlinks companion devices that stay offline for about 14
-days; if that happens, run setup again.
+If the computer is off, messages are delivered when the service next
+connects. If WhatsApp ever unlinks the device, run `zap-mcp login` (or setup) again.
 
 ### Uninstall
 
-1. On your phone, remove the device under Linked Devices.
-2. Run `claude mcp remove whatsapp -s user`, and delete the `whatsapp` entry from Claude Desktop's config.
+1. Run `zap-mcp uninstall`. It stops the service, removes start-at-login, and
+   removes zap-mcp from Claude Code and Claude Desktop.
+2. On your phone, remove the device under WhatsApp → Linked Devices.
 3. Delete the program and the `.zap-mcp` data folder.
 
 ## Development
@@ -162,10 +192,14 @@ days; if that happens, run setup again.
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
+# installs/removes the real LaunchAgent / Run entry against a throwaway data dir:
+ZAP_TEST_DIR=/tmp/zap-test ZAP_TEST_EXE=$PWD/target/debug/zap-mcp cargo test -- --ignored autostart_roundtrip
 ```
 
-- `src/main.rs`: CLI, chooses setup or server depending on how the program was started, session lock
-- `src/setup.rs`: guided installer (disclaimer, install, Claude registration)
+- `src/main.rs`: CLI (setup or relay depending on how it was started), data dir, session lock
+- `src/setup.rs`: guided installer (disclaimer, install, options, Claude registration, uninstall)
+- `src/daemon.rs`: background service (HTTP MCP, token check, health), start/stop, start-at-login
+- `src/proxy.rs`: stdio relay for clients that launch commands (`serve`)
 - `src/link.rs`: linking by QR or pairing code, initial history download
 - `src/ingest.rs`: WhatsApp events (live messages, history sync, contact sync, group names) → archive
 - `src/store.rs`: SQLite archive, LID→phone-number folding, queries

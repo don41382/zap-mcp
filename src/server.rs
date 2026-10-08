@@ -1,5 +1,6 @@
 //! MCP tools over the local archive (and, optionally, sending through the
-//! linked WhatsApp session).
+//! linked WhatsApp session). One instance per MCP session, all sharing the
+//! daemon's store and WhatsApp client.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -17,19 +18,15 @@ use whatsapp_rust::prelude::*;
 
 use crate::store::{NewMessage, StoredMessage, Store};
 
-/// How this process relates to the WhatsApp session.
-#[derive(Clone)]
-pub enum Session {
-    /// This process owns the linked device and is connected (or connecting).
-    Live(Arc<Client>),
-    /// Another process owns the session; we only read the shared archive.
-    ReadOnly,
-}
+pub const INSTRUCTIONS: &str = "Access to the user's personal WhatsApp messages via a locally linked device. \
+     Messages are private: quote only what the user needs. Times are in the user's \
+     local timezone. Start with list_chats or recent_messages; use get_messages for \
+     a conversation and search_messages for keywords.";
 
 #[derive(Clone)]
 pub struct WhatsAppServer {
     store: Store,
-    session: Session,
+    client: Arc<Client>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -177,14 +174,14 @@ fn render(messages: &[StoredMessage], with_chat: bool) -> String {
 }
 
 impl WhatsAppServer {
-    pub fn new(store: Store, session: Session, allow_send: bool) -> Self {
+    pub fn new(store: Store, client: Arc<Client>, allow_send: bool) -> Self {
         let mut tool_router = Self::tool_router();
-        if !allow_send || matches!(session, Session::ReadOnly) {
+        if !allow_send {
             tool_router.remove_route("send_message");
         }
         Self {
             store,
-            session,
+            client,
             tool_router,
         }
     }
@@ -224,24 +221,14 @@ impl WhatsAppServer {
                 "newest_message": stats.newest_message.map(fmt_time),
             }
         });
-        match &self.session {
-            Session::Live(client) => {
-                status["mode"] = json!("live");
-                status["logged_in"] = json!(client.is_logged_in());
-                status["connected"] = json!(client.is_connected());
-                status["own_number"] = json!(client.pn().map(|j| format!("+{}", j.user)));
-                if !client.is_logged_in() {
-                    status["hint"] = json!(
-                        "Not linked yet. Run `zap-mcp setup` (or just open the program) in a terminal to link your phone."
-                    );
-                }
-            }
-            Session::ReadOnly => {
-                status["mode"] = json!("read-only");
-                status["hint"] = json!(
-                    "Another zap-mcp process owns the WhatsApp session; this one serves the shared archive (new messages appear as that process receives them)."
-                );
-            }
+        let client = &self.client;
+        status["logged_in"] = json!(client.is_logged_in());
+        status["connected"] = json!(client.is_connected());
+        status["own_number"] = json!(client.pn().map(|j| format!("+{}", j.user)));
+        if client.pn().is_none() {
+            status["hint"] = json!(
+                "Not linked yet. Run `zap-mcp setup` (or just open the program) in a terminal to link your phone."
+            );
         }
         text_result(serde_json::to_string_pretty(&status).map_err(internal)?)
     }
@@ -339,9 +326,7 @@ impl WhatsAppServer {
         &self,
         Parameters(p): Parameters<SendParams>,
     ) -> ToolResult {
-        let Session::Live(client) = &self.session else {
-            return Err(invalid("sending is not available in read-only mode"));
-        };
+        let client = &self.client;
         if !client.is_logged_in() {
             return Err(invalid("WhatsApp is not linked; run `zap-mcp setup` in a terminal"));
         }
@@ -408,11 +393,6 @@ impl ServerHandler for WhatsAppServer {
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
-            .with_instructions(
-                "Access to the user's personal WhatsApp messages via a locally linked device. \
-                 Messages are private: quote only what the user needs. Times are in the user's \
-                 local timezone. Start with list_chats or recent_messages; use get_messages for \
-                 a conversation and search_messages for keywords.",
-            )
+            .with_instructions(INSTRUCTIONS)
     }
 }

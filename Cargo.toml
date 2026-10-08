@@ -7,18 +7,22 @@ description = "Unofficial MCP server for WhatsApp messages (use at your own risk
 
 [dependencies]
 anyhow = "1.0.104"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 console = "0.16"
 dialoguer = { version = "0.12.0", default-features = false }
 dirs = "7.0.0"
 env_logger = "0.11.11"
+getrandom = "0.3"
 log = "0.4.34"
 qrcode = "0.14.1"
-rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io"] }
+reqwest = { version = "0.13", default-features = false }
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io", "transport-streamable-http-server", "client", "transport-streamable-http-client-reqwest"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "io-std"] }
+tokio-util = "0.7.19"
 whatsapp-rust = { version = "0.7.0", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native", "signal"] }

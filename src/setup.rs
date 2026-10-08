@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, Input, Select};
 
+use crate::daemon::{self, Settings};
 use crate::link::{self, Keys, Method};
 use crate::{Paths, try_lock};
 
@@ -84,7 +85,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// Copy the running binary to a stable location. Replaces via rename so a copy
-/// that Claude is currently running is not overwritten in place.
+/// that is currently running is not overwritten in place.
 fn install_binary(current: &Path, dest: &Path) -> Result<()> {
     let dir = dest.parent().context("install path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -101,7 +102,7 @@ fn install_binary(current: &Path, dest: &Path) -> Result<()> {
     std::fs::rename(&tmp, dest).with_context(|| format!("installing {}", dest.display()))?;
     if cfg!(target_os = "macos") {
         // We're already running, so the user approved this download; don't
-        // let Gatekeeper block the copy when Claude starts it.
+        // let Gatekeeper block the copy when launchd or Claude starts it.
         let _ = Command::new("xattr")
             .args(["-d", "com.apple.quarantine"])
             .arg(dest)
@@ -144,15 +145,17 @@ fn claude_cmd(cli: &Path) -> Command {
     }
 }
 
-fn register_claude_code(cli: &Path, exe: &Path, args: &[String]) -> Result<()> {
-    // Replace any previous registration (e.g. older path or flags).
+/// Claude Code talks to the daemon directly over HTTP.
+fn register_claude_code(cli: &Path, settings: &Settings) -> Result<()> {
+    // Replace any previous registration (older stdio command, other port).
     let _ = claude_cmd(cli)
         .args(["mcp", "remove", SERVER_NAME, "-s", "user"])
         .output();
     let out = claude_cmd(cli)
-        .args(["mcp", "add", "-s", "user", SERVER_NAME, "--"])
-        .arg(exe)
-        .args(args)
+        .args(["mcp", "add", "-s", "user", "--transport", "http", SERVER_NAME])
+        .arg(settings.url())
+        .arg("-H")
+        .arg(settings.auth_header())
         .output()
         .context("running `claude mcp add`")?;
     if !out.status.success() {
@@ -172,53 +175,69 @@ fn desktop_config_path() -> Option<PathBuf> {
     )
 }
 
-/// Add/replace our entry in Claude Desktop's config, keeping everything else
-/// (and a backup of the previous file).
-fn register_claude_desktop(config: &Path, exe: &Path, args: &[String]) -> Result<()> {
-    let mut root: serde_json::Value = match std::fs::read_to_string(config) {
+fn read_json_config(config: &Path) -> Result<serde_json::Value> {
+    match std::fs::read_to_string(config) {
         Ok(text) if !text.trim().is_empty() => serde_json::from_str(&text).with_context(|| {
             format!(
                 "{} is not valid JSON; fix or remove it, then run setup again",
                 config.display()
             )
-        })?,
-        _ => serde_json::json!({}),
-    };
-    let obj = root
-        .as_object_mut()
-        .context("Claude Desktop config is not a JSON object")?;
-    let servers = obj
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}));
-    let servers = servers
-        .as_object_mut()
-        .context("`mcpServers` in Claude Desktop config is not an object")?;
-    servers.insert(
-        SERVER_NAME.into(),
-        serde_json::json!({ "command": exe, "args": args }),
-    );
+        }),
+        _ => Ok(serde_json::json!({})),
+    }
+}
 
+fn write_json_config(config: &Path, root: &serde_json::Value) -> Result<()> {
     if config.exists() {
         std::fs::copy(config, config.with_extension("json.bak"))
             .context("backing up Claude Desktop config")?;
     } else if let Some(dir) = config.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(config, serde_json::to_string_pretty(&root)? + "\n")
-        .with_context(|| format!("writing {}", config.display()))?;
-    Ok(())
+    std::fs::write(config, serde_json::to_string_pretty(root)? + "\n")
+        .with_context(|| format!("writing {}", config.display()))
 }
 
-fn server_args(allow_send: bool, custom_data_dir: Option<&Path>) -> Vec<String> {
-    let mut args = vec!["serve".to_string()];
-    if allow_send {
-        args.push("--allow-send".into());
+/// Claude Desktop can only launch commands, so it runs `zap-mcp serve`, which
+/// relays to the daemon. Keeps everything else in the config, plus a backup.
+fn register_claude_desktop(config: &Path, exe: &Path, args: &[String]) -> Result<()> {
+    let mut root = read_json_config(config)?;
+    let obj = root
+        .as_object_mut()
+        .context("Claude Desktop config is not a JSON object")?;
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .context("`mcpServers` in Claude Desktop config is not an object")?;
+    servers.insert(
+        SERVER_NAME.into(),
+        serde_json::json!({ "command": exe, "args": args }),
+    );
+    write_json_config(config, &root)
+}
+
+fn unregister_claude_desktop(config: &Path) -> Result<bool> {
+    if !config.exists() {
+        return Ok(false);
     }
-    if let Some(dir) = custom_data_dir {
-        args.push("--data-dir".into());
-        args.push(dir.display().to_string());
+    let mut root = read_json_config(config)?;
+    let removed = root
+        .get_mut("mcpServers")
+        .and_then(|s| s.as_object_mut())
+        .is_some_and(|s| s.remove(SERVER_NAME).is_some());
+    if removed {
+        write_json_config(config, &root)?;
     }
-    args
+    Ok(removed)
+}
+
+fn relay_args(paths: &Paths) -> Vec<String> {
+    vec![
+        "serve".into(),
+        "--data-dir".into(),
+        paths.dir.display().to_string(),
+    ]
 }
 
 /// Ask how to link and validate the phone number.
@@ -243,9 +262,16 @@ pub fn ask_method() -> Result<Method> {
     ))
 }
 
-pub async fn run(paths: &Paths, custom_data_dir: Option<&Path>) -> Result<()> {
+fn confirm(prompt: &str, default: bool) -> Result<bool> {
+    Ok(Confirm::with_theme(&theme())
+        .with_prompt(prompt)
+        .default(default)
+        .interact()?)
+}
+
+pub async fn run(paths: &Paths) -> Result<()> {
     let mut keys = Keys::default();
-    let result = wizard(paths, custom_data_dir, &mut keys).await;
+    let result = wizard(paths, &mut keys).await;
     if let Err(e) = &result {
         eprintln!("\n{e:#}");
     }
@@ -255,28 +281,24 @@ pub async fn run(paths: &Paths, custom_data_dir: Option<&Path>) -> Result<()> {
     result
 }
 
-async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) -> Result<()> {
+async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
     eprintln!(
         "\nzap-mcp {} setup\n\
          Gives Claude access to your WhatsApp messages through a linked device.",
         env!("CARGO_PKG_VERSION")
     );
 
-    heading("1/4  Disclaimer");
+    heading("1/5  Disclaimer");
     ensure_terms_accepted(paths)?;
     eprintln!("Accepted.");
 
-    heading("2/4  Install");
+    heading("2/5  Install");
     let current = std::env::current_exe().context("locating this program")?;
     let dest = install_dir()?.join(EXE_NAME);
     let exe = if same_file(&current, &dest) {
         eprintln!("Already installed at {}", dest.display());
         dest
-    } else if Confirm::with_theme(&theme())
-        .with_prompt(format!("Install to {}?", dest.display()))
-        .default(true)
-        .interact()?
-    {
+    } else if confirm(&format!("Install to {}?", dest.display()), true)? {
         install_binary(&current, &dest)?;
         eprintln!("Installed {}", dest.display());
         dest
@@ -285,26 +307,26 @@ async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) 
         current
     };
 
-    heading("3/4  Connect to Claude");
+    heading("3/5  Options");
     eprintln!(
         "Claude can read your messages. It can also send messages for you, but\n\
          sending through an unofficial client increases the risk of a ban."
     );
-    let allow_send = Confirm::with_theme(&theme())
-        .with_prompt("Allow Claude to send WhatsApp messages?")
-        .default(false)
-        .interact()?;
-    let args = server_args(allow_send, custom_data_dir);
+    let mut settings = Settings::load_or_create(paths)?;
+    settings.allow_send = confirm("Allow Claude to send WhatsApp messages?", false)?;
+    settings.save(paths)?;
+    eprintln!(
+        "\nzap-mcp runs as one small background service that keeps WhatsApp connected\n\
+         and stores new messages, shared by all Claude windows."
+    );
+    let at_login = confirm("Start it automatically when you log in? (recommended)", true)?;
 
+    heading("4/5  Connect to Claude");
     let mut registered = Vec::new();
     match find_claude_cli() {
         Some(cli) => {
-            if Confirm::with_theme(&theme())
-                .with_prompt("Add to Claude Code?")
-                .default(true)
-                .interact()?
-            {
-                match register_claude_code(&cli, &exe, &args) {
+            if confirm("Add to Claude Code?", true)? {
+                match register_claude_code(&cli, &settings) {
                     Ok(()) => registered.push("Claude Code"),
                     Err(e) => eprintln!("  {e:#}"),
                 }
@@ -314,12 +336,8 @@ async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) 
     }
     match desktop_config_path() {
         Some(config) if config.parent().is_some_and(Path::exists) => {
-            if Confirm::with_theme(&theme())
-                .with_prompt("Add to Claude Desktop?")
-                .default(true)
-                .interact()?
-            {
-                match register_claude_desktop(&config, &exe, &args) {
+            if confirm("Add to Claude Desktop?", true)? {
+                match register_claude_desktop(&config, &exe, &relay_args(paths)) {
                     Ok(()) => registered.push("Claude Desktop"),
                     Err(e) => eprintln!("  {e:#}"),
                 }
@@ -329,25 +347,57 @@ async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) 
     }
     if registered.is_empty() {
         eprintln!(
-            "\nNot added to any Claude app. Configure your MCP client to run:\n  {} {}",
+            "\nNot added to any Claude app. Point your MCP client at:\n  \
+             HTTP: {}  (header \"{}\")\n  or stdio: {} {}",
+            settings.url(),
+            settings.auth_header(),
             exe.display(),
-            args.join(" ")
+            relay_args(paths).join(" ")
         );
     } else {
         eprintln!("Added to {}.", registered.join(" and "));
     }
 
-    heading("4/4  Link WhatsApp");
+    // Linking needs the session, so a running (possibly older) daemon has to
+    // stop first; it's started again below with the installed binary.
+    heading("5/5  Link WhatsApp");
+    daemon::stop(paths).await?;
     match try_lock(&paths.lock)? {
-        None => eprintln!(
-            "The WhatsApp server is running inside Claude right now, so it's already set up.\n\
-             To link a different account, quit Claude and run this setup again."
+        None => bail!(
+            "Another zap-mcp (or whatsapp-rust-mcp) is still using WhatsApp, probably\n\
+             inside a Claude window. Quit Claude completely and run setup again."
         ),
-        Some(_lock) => match link::linked_number(paths).await? {
-            Some(number) => eprintln!("Already linked as {number}."),
-            None => link::link(paths, ask_method()?, keys).await?,
-        },
+        Some(lock) => {
+            let linked = link::linked_number(paths).await;
+            let result = match linked {
+                Ok(Some(number)) => {
+                    eprintln!("Already linked as {number}.");
+                    Ok(())
+                }
+                Ok(None) => match ask_method() {
+                    Ok(method) => link::link(paths, method, keys).await,
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            };
+            drop(lock);
+            result?;
+        }
     }
+
+    heading("Starting");
+    if at_login {
+        daemon::autostart::install(paths, &exe)?;
+    } else {
+        daemon::autostart::uninstall()?;
+        daemon::spawn_detached(paths, &exe)?;
+    }
+    let health = daemon::wait_until_healthy(paths, &settings).await?;
+    eprintln!(
+        "Background service running{}{}.",
+        if at_login { " (starts at login)" } else { "" },
+        if health.linked { "" } else { ", but WhatsApp is not linked" }
+    );
 
     heading("Done");
     if registered.is_empty() {
@@ -359,8 +409,39 @@ async fn wizard(paths: &Paths, custom_data_dir: Option<&Path>, keys: &mut Keys) 
         );
     }
     eprintln!(
-        "Your data stays on this computer in {}",
-        paths.terms.parent().map(|p| p.display().to_string()).unwrap_or_default()
+        "Your data stays on this computer in {}\nCheck on it any time with `zap-mcp status`.",
+        paths.dir.display()
+    );
+    Ok(())
+}
+
+/// Stop the daemon, remove start-at-login and the Claude registrations.
+/// Leaves the data (and the WhatsApp link) in place.
+pub async fn uninstall(paths: &Paths) -> Result<()> {
+    if daemon::stop(paths).await? {
+        eprintln!("Stopped the background service.");
+    }
+    if daemon::autostart::uninstall()? {
+        eprintln!("Removed start at login.");
+    }
+    if let Some(cli) = find_claude_cli() {
+        let out = claude_cmd(&cli)
+            .args(["mcp", "remove", SERVER_NAME, "-s", "user"])
+            .output();
+        if out.is_ok_and(|o| o.status.success()) {
+            eprintln!("Removed from Claude Code.");
+        }
+    }
+    if let Some(config) = desktop_config_path()
+        && unregister_claude_desktop(&config)?
+    {
+        eprintln!("Removed from Claude Desktop.");
+    }
+    eprintln!(
+        "\nYour data is still in {}.\n\
+         To remove everything: unlink the device on your phone (WhatsApp > Linked Devices),\n\
+         then delete that folder and the zap-mcp program.",
+        paths.dir.display()
     );
     Ok(())
 }
@@ -380,7 +461,7 @@ mod tests {
         )
         .unwrap();
 
-        let args = server_args(true, None);
+        let args = vec!["serve".to_string()];
         register_claude_desktop(&config, Path::new("/bin/wa"), &args).unwrap();
 
         let v: serde_json::Value =
@@ -388,11 +469,14 @@ mod tests {
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["mcpServers"]["other"]["command"], "x");
         assert_eq!(v["mcpServers"]["whatsapp"]["command"], "/bin/wa");
-        assert_eq!(
-            v["mcpServers"]["whatsapp"]["args"],
-            serde_json::json!(["serve", "--allow-send"])
-        );
+        assert_eq!(v["mcpServers"]["whatsapp"]["args"], serde_json::json!(["serve"]));
         assert!(config.with_extension("json.bak").exists());
+
+        assert!(unregister_claude_desktop(&config).unwrap());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert!(v["mcpServers"].get("whatsapp").is_none());
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
 
         std::fs::write(&config, "{ not json").unwrap();
         assert!(register_claude_desktop(&config, Path::new("/bin/wa"), &args).is_err());
