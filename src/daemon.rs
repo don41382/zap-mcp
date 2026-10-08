@@ -137,19 +137,31 @@ pub async fn run(paths: &Paths, allow_send_flag: bool) -> Result<()> {
     let settings = Settings::load_or_create(paths)?;
     let allow_send = settings.allow_send || allow_send_flag;
 
-    // Wait for the session lock. Another daemon (or a pre-daemon stdio
-    // server) may hold it; if a healthy daemon already serves, we're done.
+    // Only one daemon process at a time, whether it's serving or still
+    // waiting for the session below. Later starts (launchd, relays) just exit.
+    let Some(_instance) = try_lock(&paths.daemon_lock)? else {
+        info!("another zap-mcp daemon is already running or starting");
+        return Ok(());
+    };
+
+    // Wait for the session lock, which a pre-daemon stdio server (old
+    // version, one per Claude window) may still hold.
+    let mut announced = false;
     let lock = loop {
         if let Some(lock) = try_lock(&paths.lock)? {
             break lock;
         }
-        if health(&settings).await.is_some() {
-            info!("zap-mcp daemon is already running on port {}", settings.port);
-            return Ok(());
+        if !announced {
+            warn!(
+                "waiting for another process to release the WhatsApp session \
+                 (an older zap-mcp / whatsapp-rust-mcp, probably in a Claude window)"
+            );
+            std::fs::write(&paths.waiting, "").ok();
+            announced = true;
         }
-        info!("waiting for another zap-mcp process to release the WhatsApp session");
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     };
+    let _ = std::fs::remove_file(&paths.waiting);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", settings.port))
         .await
@@ -233,6 +245,32 @@ pub async fn run(paths: &Paths, allow_send_flag: bool) -> Result<()> {
     Ok(())
 }
 
+/// `--data-dir <dir>` for commands we launch, only if the user chose the dir.
+pub fn data_dir_args(paths: &Paths) -> Vec<String> {
+    if paths.custom {
+        vec!["--data-dir".into(), paths.dir.display().to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Why the daemon isn't answering, for error messages.
+pub fn not_running_reason(paths: &Paths) -> String {
+    if paths.waiting.exists() && try_lock(&paths.daemon_lock).is_ok_and(|l| l.is_none()) {
+        format!(
+            "the zap-mcp background service is waiting for an older zap-mcp / whatsapp-rust-mcp \
+             process to release WhatsApp. Quit every Claude window that still uses the old \
+             version (or run `pkill -f whatsapp-rust-mcp`); it then starts by itself. Log: {}",
+            paths.log.display()
+        )
+    } else {
+        format!(
+            "the zap-mcp background service did not start. See {}",
+            paths.log.display()
+        )
+    }
+}
+
 /// Start the daemon as a detached background process (no console window).
 pub fn spawn_detached(paths: &Paths, exe: &Path) -> Result<()> {
     let log = std::fs::OpenOptions::new()
@@ -242,8 +280,7 @@ pub fn spawn_detached(paths: &Paths, exe: &Path) -> Result<()> {
         .with_context(|| format!("opening {}", paths.log.display()))?;
     let mut cmd = Command::new(exe);
     cmd.arg("daemon")
-        .arg("--data-dir")
-        .arg(&paths.dir)
+        .args(data_dir_args(paths))
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -283,11 +320,7 @@ pub async fn wait_until_healthy(paths: &Paths, settings: &Settings) -> Result<He
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    bail!(
-        "the zap-mcp background service did not start within 20s. If an older zap-mcp \
-         (or whatsapp-rust-mcp) is still running, quit Claude completely. Log: {}",
-        paths.log.display()
-    )
+    bail!("{}", not_running_reason(paths))
 }
 
 /// Make sure a daemon answers, starting one if needed.
@@ -296,17 +329,7 @@ pub async fn ensure_running(paths: &Paths, settings: &Settings) -> Result<Health
         return Ok(h);
     }
     start(paths)?;
-    for _ in 0..40 {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Some(h) = health(settings).await {
-            return Ok(h);
-        }
-    }
-    bail!(
-        "the zap-mcp background service did not start within 20s. If an older zap-mcp \
-         (or whatsapp-rust-mcp) is still running, quit Claude completely. Log: {}",
-        paths.log.display()
-    )
+    wait_until_healthy(paths, settings).await
 }
 
 /// Stop a running daemon (graceful on macOS/Linux) and wait until it has
@@ -371,12 +394,8 @@ pub mod autostart {
     #[cfg(target_os = "macos")]
     pub fn install(paths: &Paths, exe: &Path) -> Result<()> {
         let plist = plist_path()?;
-        let args = [
-            exe.display().to_string(),
-            "daemon".into(),
-            "--data-dir".into(),
-            paths.dir.display().to_string(),
-        ];
+        let mut args = vec![exe.display().to_string(), "daemon".into()];
+        args.extend(data_dir_args(paths));
         let args_xml: String = args
             .iter()
             .map(|a| format!("\t\t<string>{}</string>\n", xml_escape(a)))
@@ -480,11 +499,10 @@ pub mod autostart {
     #[cfg(windows)]
     pub fn install(paths: &Paths, exe: &Path) -> Result<()> {
         // `daemon --detach` re-launches itself without a console window.
-        let value = format!(
-            "\"{}\" daemon --detach --data-dir \"{}\"",
-            exe.display(),
-            paths.dir.display()
-        );
+        let mut value = format!("\"{}\" daemon --detach", exe.display());
+        if paths.custom {
+            value.push_str(&format!(" --data-dir \"{}\"", paths.dir.display()));
+        }
         let out = Command::new("reg")
             .args(["add", RUN_KEY, "/v", "zap-mcp", "/t", "REG_SZ", "/d", &value, "/f"])
             .output()

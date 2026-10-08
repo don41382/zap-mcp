@@ -81,6 +81,15 @@ enum Command {
 
 pub(crate) struct Paths {
     dir: PathBuf,
+    /// Whether the user chose `dir` (--data-dir / env). Only then is it
+    /// written into launch configs; otherwise they resolve the default.
+    custom: bool,
+    /// Held by the one daemon process (separate from the WhatsApp session
+    /// lock, which it may still be waiting for).
+    daemon_lock: PathBuf,
+    /// Present while the daemon waits for another process to release the
+    /// WhatsApp session.
+    waiting: PathBuf,
     session_db: PathBuf,
     archive_db: PathBuf,
     lock: PathBuf,
@@ -92,9 +101,15 @@ pub(crate) struct Paths {
 
 impl Paths {
     fn new(dir: Option<PathBuf>) -> Result<Self> {
-        let dir = match dir {
-            Some(d) => d,
-            None => default_data_dir()?,
+        let home = dirs::home_dir();
+        // Launch configs written before the rename may still name the old
+        // default directory explicitly; treat that as "default" so the
+        // migration applies to them too.
+        let legacy = home.as_ref().map(|h| h.join(".whatsapp-rust-mcp"));
+        let (dir, custom) = match dir {
+            Some(d) if Some(&d) == legacy.as_ref() => (default_data_dir()?, false),
+            Some(d) => (d, true),
+            None => (default_data_dir()?, false),
         };
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("creating data dir {}", dir.display()))?;
@@ -107,7 +122,10 @@ impl Paths {
             settings: dir.join("settings.json"),
             pid: dir.join("daemon.pid"),
             log: dir.join("daemon.log"),
+            daemon_lock: dir.join("daemon.lock"),
+            waiting: dir.join("daemon.waiting"),
             dir,
+            custom,
         })
     }
 }
@@ -273,6 +291,9 @@ async fn status(paths: &Paths) -> Result<()> {
                 (true, false) => "linked, connecting...",
             }
         ),
+        None if paths.waiting.exists() => {
+            println!("background service: {}", daemon::not_running_reason(paths))
+        }
         None => println!("background service: not running"),
     }
     println!(

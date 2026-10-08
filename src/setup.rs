@@ -233,11 +233,9 @@ fn unregister_claude_desktop(config: &Path) -> Result<bool> {
 }
 
 fn relay_args(paths: &Paths) -> Vec<String> {
-    vec![
-        "serve".into(),
-        "--data-dir".into(),
-        paths.dir.display().to_string(),
-    ]
+    let mut args = vec!["serve".to_string()];
+    args.extend(daemon::data_dir_args(paths));
+    args
 }
 
 /// Ask how to link and validate the phone number.
