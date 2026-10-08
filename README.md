@@ -1,6 +1,6 @@
 # zap-mcp
 
-**An unofficial MCP server for WhatsApp messages.** Lets Claude read (and, if you allow it, send) your WhatsApp chats.
+**An unofficial MCP server for WhatsApp messages.** Lets Claude and Codex read (and, if you allow it, send) your WhatsApp chats.
 
 > [!CAUTION]
 > **Unofficial software. Use entirely at your own risk.**
@@ -42,8 +42,8 @@ a `[deleted]` marker.
 
 The program is its own installer. When **you** start it (double-click it, or
 run it in a terminal), it runs setup. Afterwards it runs as one small
-background service that keeps WhatsApp connected and that all Claude windows
-share.
+background service that keeps WhatsApp connected and that all Claude and
+Codex windows share.
 
 1. Download the file for your system from the repository's **Releases** page and unpack it:
 
@@ -53,7 +53,7 @@ share.
    | Mac with Intel | `zap-mcp-x86_64-apple-darwin.tar.gz` |
    | Windows (64-bit) | `zap-mcp-x86_64-pc-windows-msvc.zip` |
 
-2. Quit Claude, then start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
+2. Quit Claude and Codex, then start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
    in Terminal; Windows: double-click `zap-mcp.exe`). Setup walks you through
    five steps:
    1. **Disclaimer.** You must read and accept it to continue.
@@ -61,9 +61,9 @@ share.
       `%LOCALAPPDATA%\Programs\zap-mcp` (Windows).
    3. **Options.** Whether Claude may send messages (default: no), and whether
       the background service starts when you log in (recommended).
-   4. **Connect to Claude.** Adds zap-mcp to Claude Code and/or Claude Desktop
-      if they're installed. Your existing Claude Desktop config is kept, with a
-      backup next to it.
+   4. **Connect apps.** Adds zap-mcp to Claude Code, Claude Desktop and Codex
+      (CLI, IDE extension and the Codex app) if they're installed. Your
+      existing Claude Desktop config is kept, with a backup next to it.
    5. **Link WhatsApp.** You choose either:
       - **QR code:** WhatsApp → Settings → Linked Devices → Link a Device, then scan.
       - **Phone number:** setup shows an 8-character code, which you enter under
@@ -75,7 +75,17 @@ share.
 
    Finally it starts the background service and checks that it answers.
 
-3. Start Claude and ask something like *"What did I miss on WhatsApp today?"*
+3. Start Claude or Codex and ask something like *"What did I miss on WhatsApp today?"*
+
+**Updating:** download the new version and start it the same way. Setup
+detects the existing installation and offers **Update**: it replaces the
+program and restarts the background service, keeping your settings, app
+registrations and WhatsApp link. Claude and Codex reconnect by themselves.
+
+**ChatGPT** (the chat, not Codex) can only use MCP servers that are reachable
+on the internet, not ones on your computer. Making your WhatsApp archive
+reachable from the internet isn't something zap-mcp supports, on purpose.
+Codex, including Codex inside the ChatGPT app, works as described above.
 
 Run `zap-mcp status` at any time to see whether the service is running and WhatsApp is connected.
 
@@ -93,7 +103,7 @@ zap-mcp status      # is the service running, is WhatsApp linked and connected
 zap-mcp login [--qr | --phone +4915112345678]   # only (re-)link WhatsApp
 zap-mcp daemon      # run the background service in the foreground (logs to stderr)
 zap-mcp serve       # stdio MCP relay to the service, for clients that launch commands
-zap-mcp uninstall   # stop the service, remove start-at-login and Claude registrations
+zap-mcp uninstall   # stop the service, remove start-at-login and app registrations
 ```
 
 The service listens on `http://127.0.0.1:<port>/mcp`. The port and the access
@@ -119,6 +129,12 @@ it uses the relay, which starts the service if it isn't running:
 }
 ```
 
+Codex (`~/.codex/config.toml`, shared by the CLI, IDE extension and Codex app):
+
+```sh
+codex mcp add whatsapp -- ~/.local/bin/zap-mcp serve
+```
+
 Any other MCP client: use the HTTP URL with the token, or run `zap-mcp serve` over stdio.
 
 </details>
@@ -141,10 +157,10 @@ The `simd` feature of whatsapp-rust needs nightly Rust, so it's turned off in `C
 ## How it runs
 
 ```
-Claude Code ──HTTP + token──┐
-                            ├──> zap-mcp daemon ──> WhatsApp
-Claude Desktop ──stdio──> zap-mcp serve (relay) ┘        │
-                                                    messages.db
+Claude Code ──────── HTTP + token ────────┐
+                                          ├──> zap-mcp daemon ──> WhatsApp
+Claude Desktop, Codex ──stdio──> zap-mcp serve (relay) ┘       │
+                                                          messages.db
 ```
 
 - **One background service** (`zap-mcp daemon`) holds the WhatsApp connection
@@ -183,7 +199,7 @@ connects. If WhatsApp ever unlinks the device, run `zap-mcp login` (or setup) ag
 ### Uninstall
 
 1. Run `zap-mcp uninstall`. It stops the service, removes start-at-login, and
-   removes zap-mcp from Claude Code and Claude Desktop.
+   removes zap-mcp from Claude Code, Claude Desktop and Codex.
 2. On your phone, remove the device under WhatsApp → Linked Devices.
 3. Delete the program and the `.zap-mcp` data folder.
 

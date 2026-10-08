@@ -111,27 +111,33 @@ fn install_binary(current: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn find_claude_cli() -> Option<PathBuf> {
-    let names: &[&str] = if cfg!(windows) {
-        &["claude.exe", "claude.cmd", "claude.bat"]
+/// Find a command-line tool (e.g. `claude`, `codex`) on PATH or in its usual
+/// install locations, in case the shell PATH isn't loaded (double-click).
+fn find_cli(name: &str) -> Option<PathBuf> {
+    let names: Vec<String> = if cfg!(windows) {
+        ["exe", "cmd", "bat"].iter().map(|e| format!("{name}.{e}")).collect()
     } else {
-        &["claude"]
+        vec![name.to_string()]
     };
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
-    // Default install locations, in case the shell PATH isn't loaded (e.g.
-    // when double-clicked).
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join(".local").join("bin"));
         dirs.push(home.join(".claude").join("local"));
+        dirs.push(home.join(".npm-global").join("bin"));
+    }
+    if !cfg!(windows) {
+        dirs.push("/opt/homebrew/bin".into());
+        dirs.push("/usr/local/bin".into());
     }
     dirs.iter()
         .flat_map(|d| names.iter().map(move |n| d.join(n)))
         .find(|p| p.is_file())
 }
 
-fn claude_cmd(cli: &Path) -> Command {
+/// Run a CLI found by [`find_cli`] (`.cmd` scripts need `cmd /C` on Windows).
+fn cli_cmd(cli: &Path) -> Command {
     let is_script = cli
         .extension()
         .and_then(OsStr::to_str)
@@ -148,10 +154,10 @@ fn claude_cmd(cli: &Path) -> Command {
 /// Claude Code talks to the daemon directly over HTTP.
 fn register_claude_code(cli: &Path, settings: &Settings) -> Result<()> {
     // Replace any previous registration (older stdio command, other port).
-    let _ = claude_cmd(cli)
+    let _ = cli_cmd(cli)
         .args(["mcp", "remove", SERVER_NAME, "-s", "user"])
         .output();
-    let out = claude_cmd(cli)
+    let out = cli_cmd(cli)
         .args(["mcp", "add", "-s", "user", "--transport", "http", SERVER_NAME])
         .arg(settings.url())
         .arg("-H")
@@ -161,6 +167,25 @@ fn register_claude_code(cli: &Path, settings: &Settings) -> Result<()> {
     if !out.status.success() {
         bail!(
             "`claude mcp add` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Codex (CLI, IDE extension and the Codex app share ~/.codex/config.toml)
+/// launches commands, so it uses the stdio relay like Claude Desktop.
+fn register_codex(cli: &Path, exe: &Path, args: &[String]) -> Result<()> {
+    let _ = cli_cmd(cli).args(["mcp", "remove", SERVER_NAME]).output();
+    let out = cli_cmd(cli)
+        .args(["mcp", "add", SERVER_NAME, "--"])
+        .arg(exe)
+        .args(args)
+        .output()
+        .context("running `codex mcp add`")?;
+    if !out.status.success() {
+        bail!(
+            "`codex mcp add` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -282,17 +307,20 @@ pub async fn run(paths: &Paths) -> Result<()> {
 async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
     eprintln!(
         "\nzap-mcp {} setup\n\
-         Gives Claude access to your WhatsApp messages through a linked device.",
+         Gives Claude and Codex access to your WhatsApp messages through a linked device.",
         env!("CARGO_PKG_VERSION")
     );
+    let current = std::env::current_exe().context("locating this program")?;
+    let dest = install_dir()?.join(EXE_NAME);
+    if offer_update(paths, &current, &dest).await? {
+        return Ok(());
+    }
 
     heading("1/5  Disclaimer");
     ensure_terms_accepted(paths)?;
     eprintln!("Accepted.");
 
     heading("2/5  Install");
-    let current = std::env::current_exe().context("locating this program")?;
-    let dest = install_dir()?.join(EXE_NAME);
     let exe = if same_file(&current, &dest) {
         eprintln!("Already installed at {}", dest.display());
         dest
@@ -319,9 +347,9 @@ async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
     );
     let at_login = confirm("Start it automatically when you log in? (recommended)", true)?;
 
-    heading("4/5  Connect to Claude");
+    heading("4/5  Connect apps");
     let mut registered = Vec::new();
-    match find_claude_cli() {
+    match find_cli("claude") {
         Some(cli) => {
             if confirm("Add to Claude Code?", true)? {
                 match register_claude_code(&cli, &settings) {
@@ -343,9 +371,20 @@ async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
         }
         _ => eprintln!("Claude Desktop not found (skipping)."),
     }
+    match find_cli("codex") {
+        Some(cli) => {
+            if confirm("Add to Codex (CLI, IDE extension and Codex app)?", true)? {
+                match register_codex(&cli, &exe, &relay_args(paths)) {
+                    Ok(()) => registered.push("Codex"),
+                    Err(e) => eprintln!("  {e:#}"),
+                }
+            }
+        }
+        None => eprintln!("Codex not found (skipping)."),
+    }
     if registered.is_empty() {
         eprintln!(
-            "\nNot added to any Claude app. Point your MCP client at:\n  \
+            "\nNot added to any app. Point your MCP client at:\n  \
              HTTP: {}  (header \"{}\")\n  or stdio: {} {}",
             settings.url(),
             settings.auth_header(),
@@ -353,7 +392,7 @@ async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
             relay_args(paths).join(" ")
         );
     } else {
-        eprintln!("Added to {}.", registered.join(" and "));
+        eprintln!("Added to {}.", registered.join(", "));
     }
 
     // Linking needs the session, so a running (possibly older) daemon has to
@@ -413,6 +452,90 @@ async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
     Ok(())
 }
 
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.trim().trim_start_matches('v').split('.');
+    let mut next = || parts.next()?.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok();
+    Some((next()?, next()?, next()?))
+}
+
+/// Version of an installed binary, by asking it (`zap-mcp 0.1.0`).
+fn installed_version(exe: &Path) -> Option<String> {
+    let out = Command::new(exe).arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(text.split_whitespace().nth(1)?.to_string())
+}
+
+/// When zap-mcp is already set up, offer a quick update (new binary, restart
+/// the service, keep settings, registrations and the WhatsApp link) instead
+/// of the full setup. Returns `true` if handled and setup should end.
+async fn offer_update(paths: &Paths, current: &Path, dest: &Path) -> Result<bool> {
+    if !dest.exists() || !paths.settings.exists() || !paths.session_db.exists() {
+        return Ok(false);
+    }
+    let settings = Settings::load_or_create(paths)?;
+    let running = daemon::health(&settings).await;
+    let Some(installed) = running
+        .as_ref()
+        .map(|h| h.version.clone())
+        .or_else(|| installed_version(dest))
+    else {
+        return Ok(false);
+    };
+    let this = env!("CARGO_PKG_VERSION");
+    let order = parse_version(this).cmp(&parse_version(&installed));
+
+    heading("Existing installation");
+    eprintln!(
+        "zap-mcp {installed} is installed at {} (background service {}).",
+        dest.display(),
+        if running.is_some() { "running" } else { "not running" }
+    );
+    let first = match order {
+        std::cmp::Ordering::Greater => {
+            format!("Update to {this} (keeps your settings and WhatsApp link)")
+        }
+        std::cmp::Ordering::Equal => {
+            eprintln!("This program is the same version, so it's up to date.");
+            "Restart the background service".to_string()
+        }
+        std::cmp::Ordering::Less => {
+            eprintln!("Note: this program ({this}) is older than the installed version.");
+            format!("Downgrade to {this}")
+        }
+    };
+    let choice = Select::with_theme(&theme())
+        .with_prompt("What do you want to do?")
+        .items([
+            first.as_str(),
+            "Change settings (run the full setup again)",
+            "Close",
+        ])
+        .default(0)
+        .interact()?;
+    match choice {
+        1 => return Ok(false),
+        2 => return Ok(true),
+        _ => {}
+    }
+
+    ensure_terms_accepted(paths)?;
+    daemon::stop(paths).await?;
+    if !same_file(current, dest) {
+        install_binary(current, dest)?;
+        eprintln!("Installed zap-mcp {this} at {}", dest.display());
+    }
+    daemon::start_with(paths, dest)?;
+    let health = daemon::wait_until_healthy(paths, &settings).await?;
+    eprintln!(
+        "Background service running (v{}){}.",
+        health.version,
+        if health.linked { "" } else { ", but WhatsApp is not linked" }
+    );
+    heading("Done");
+    eprintln!("Claude and Codex reconnect by themselves; no restart needed.");
+    Ok(true)
+}
+
 /// Stop the daemon, remove start-at-login and the Claude registrations.
 /// Leaves the data (and the WhatsApp link) in place.
 pub async fn uninstall(paths: &Paths) -> Result<()> {
@@ -422,8 +545,8 @@ pub async fn uninstall(paths: &Paths) -> Result<()> {
     if daemon::autostart::uninstall()? {
         eprintln!("Removed start at login.");
     }
-    if let Some(cli) = find_claude_cli() {
-        let out = claude_cmd(&cli)
+    if let Some(cli) = find_cli("claude") {
+        let out = cli_cmd(&cli)
             .args(["mcp", "remove", SERVER_NAME, "-s", "user"])
             .output();
         if out.is_ok_and(|o| o.status.success()) {
@@ -434,6 +557,12 @@ pub async fn uninstall(paths: &Paths) -> Result<()> {
         && unregister_claude_desktop(&config)?
     {
         eprintln!("Removed from Claude Desktop.");
+    }
+    if let Some(cli) = find_cli("codex") {
+        let out = cli_cmd(&cli).args(["mcp", "remove", SERVER_NAME]).output();
+        if out.is_ok_and(|o| o.status.success()) {
+            eprintln!("Removed from Codex.");
+        }
     }
     eprintln!(
         "\nYour data is still in {}.\n\
@@ -447,6 +576,14 @@ pub async fn uninstall(paths: &Paths) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions_compare_numerically() {
+        assert_eq!(parse_version("0.10.0"), Some((0, 10, 0)));
+        assert_eq!(parse_version("v1.2.3-beta"), Some((1, 2, 3)));
+        assert!(parse_version("0.10.0") > parse_version("0.9.9"));
+        assert_eq!(parse_version("garbage"), None);
+    }
 
     #[test]
     fn desktop_config_is_merged_not_replaced() {

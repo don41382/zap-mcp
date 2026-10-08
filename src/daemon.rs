@@ -305,11 +305,16 @@ pub fn spawn_detached(paths: &Paths, exe: &Path) -> Result<()> {
 /// Start the daemon in the background: through launchd when the LaunchAgent
 /// is installed (so it stays managed), otherwise as a detached process.
 pub fn start(paths: &Paths) -> Result<()> {
+    start_with(paths, &std::env::current_exe().context("locating zap-mcp")?)
+}
+
+/// Like [`start`], with `exe` as the program for a detached start.
+pub fn start_with(paths: &Paths, exe: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     if autostart::is_installed() && autostart::kickstart().is_ok() {
         return Ok(());
     }
-    spawn_detached(paths, &std::env::current_exe().context("locating zap-mcp")?)
+    spawn_detached(paths, exe)
 }
 
 /// Wait until a daemon answers.

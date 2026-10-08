@@ -279,10 +279,16 @@ async fn login(paths: &Paths, phone: Option<String>, qr: bool) -> Result<()> {
 }
 
 async fn status(paths: &Paths) -> Result<()> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+
+    // Collected first and written once, ignoring errors, so piping into
+    // `head` etc. doesn't panic on a closed stdout.
+    let mut out = String::new();
     let settings = daemon::Settings::load_or_create(paths)?;
-    match daemon::health(&settings).await {
-        Some(h) => println!(
-            "background service: running (v{}) at {}\nWhatsApp: {}",
+    let service = match daemon::health(&settings).await {
+        Some(h) => format!(
+            "running (v{}) at {}\nWhatsApp: {}",
             h.version,
             settings.url(),
             match (h.linked, h.connected) {
@@ -291,24 +297,20 @@ async fn status(paths: &Paths) -> Result<()> {
                 (true, false) => "linked, connecting...",
             }
         ),
-        None if paths.waiting.exists() => {
-            println!("background service: {}", daemon::not_running_reason(paths))
-        }
-        None => println!("background service: not running"),
-    }
-    println!(
-        "start at login: {}",
-        if daemon::autostart::is_installed() { "yes" } else { "no" }
-    );
-    println!(
-        "send_message: {}",
-        if settings.allow_send { "allowed" } else { "off" }
-    );
+        None if paths.waiting.exists() => daemon::not_running_reason(paths),
+        None => "not running".to_string(),
+    };
+    let _ = writeln!(out, "background service: {service}");
+    let at_login = if daemon::autostart::is_installed() { "yes" } else { "no" };
+    let _ = writeln!(out, "start at login: {at_login}");
+    let send = if settings.allow_send { "allowed" } else { "off" };
+    let _ = writeln!(out, "send_message: {send}");
     if let Ok(store) = Store::open(&paths.archive_db)
         && let Ok(s) = store.stats()
     {
-        println!("archive: {} chats, {} messages", s.chats, s.messages);
+        let _ = writeln!(out, "archive: {} chats, {} messages", s.chats, s.messages);
     }
-    println!("data: {}", paths.dir.display());
+    let _ = writeln!(out, "data: {}", paths.dir.display());
+    let _ = std::io::stdout().write_all(out.as_bytes());
     Ok(())
 }
