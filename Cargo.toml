@@ -1,0 +1,24 @@
+[package]
+name = "whatsapp-rust-mcp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Unofficial MCP server for WhatsApp messages (use at your own risk)"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+console = "0.16"
+dialoguer = { version = "0.12.0", default-features = false }
+dirs = "7.0.0"
+env_logger = "0.11.11"
+log = "0.4.34"
+qrcode = "0.14.1"
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-io"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "io-std"] }
+whatsapp-rust = { version = "0.7.0", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "ureq-client", "tokio-native", "signal"] }
