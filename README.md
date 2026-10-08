@@ -45,7 +45,7 @@ run it in a terminal), it runs setup. Afterwards it runs as one small
 background service that keeps WhatsApp connected and that all Claude and
 Codex windows share.
 
-1. Download the file for your system from the repository's **Releases** page and unpack it:
+1. Download the file for your system from the [**Releases**](https://github.com/don41382/zap-mcp/releases/latest) page and unpack it:
 
    | System | File |
    |---|---|

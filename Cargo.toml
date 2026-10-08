@@ -3,6 +3,7 @@ name = "zap-mcp"
 version = "0.2.1"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/don41382/zap-mcp"
 description = "Unofficial MCP server for WhatsApp messages (use at your own risk)"
 
 [dependencies]
