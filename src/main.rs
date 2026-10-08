@@ -46,7 +46,12 @@ struct Cli {
 enum Command {
     /// Interactive installer: disclaimer, install, background service, add to
     /// Claude, link WhatsApp.
-    Setup,
+    Setup {
+        /// Started by install.sh / install.ps1 from a temporary download:
+        /// always install to the standard location, don't wait for Enter.
+        #[arg(long, hide = true)]
+        from_installer: bool,
+    },
     /// Only link WhatsApp (QR code or pairing code) and download history.
     Login {
         /// Link with a pairing code for this number (with country code)
@@ -203,7 +208,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let command = cli.command.unwrap_or(if interactive {
-        Command::Setup
+        Command::Setup {
+            from_installer: false,
+        }
     } else {
         Command::Serve { allow_send: false }
     });
@@ -229,8 +236,8 @@ fn main() -> Result<()> {
         .build()?;
     rt.block_on(async {
         match command {
-            Command::Setup => {
-                if setup::run(&paths).await.is_err() {
+            Command::Setup { from_installer } => {
+                if setup::run(&paths, from_installer).await.is_err() {
                     // Already reported to the user inside the installer.
                     std::process::exit(1);
                 }

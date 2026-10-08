@@ -296,15 +296,18 @@ fn confirm(prompt: &str, default: bool) -> Result<bool> {
         .interact()?)
 }
 
-pub async fn run(paths: &Paths) -> Result<()> {
+pub async fn run(paths: &Paths, from_installer: bool) -> Result<()> {
     let mut keys = Keys::default();
-    let result = wizard(paths, &mut keys).await;
+    let result = wizard(paths, &mut keys, from_installer).await;
     if let Err(e) = &result {
         eprintln!("\n{e:#}");
     }
-    // When double-clicked, the window closes as soon as we exit.
-    eprintln!("\nPress Enter to close.");
-    keys.enter().await;
+    // When double-clicked, the window closes as soon as we exit. The install
+    // scripts run in a terminal that stays open.
+    if !from_installer {
+        eprintln!("\nPress Enter to close.");
+        keys.enter().await;
+    }
     if let Some(path) = DELETE_AFTER_EXIT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -315,7 +318,7 @@ pub async fn run(paths: &Paths) -> Result<()> {
     result
 }
 
-async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
+async fn wizard(paths: &Paths, keys: &mut Keys, from_installer: bool) -> Result<()> {
     eprintln!(
         "\nzap-mcp {} setup\n\
          Gives Claude and Codex access to your WhatsApp messages through a linked device.",
@@ -335,7 +338,7 @@ async fn wizard(paths: &Paths, keys: &mut Keys) -> Result<()> {
     let exe = if same_file(&current, &dest) {
         eprintln!("Already installed at {}", dest.display());
         dest
-    } else if confirm(&format!("Install to {}?", dest.display()), true)? {
+    } else if from_installer || confirm(&format!("Install to {}?", dest.display()), true)? {
         install_binary(&current, &dest)?;
         eprintln!("Installed {}", dest.display());
         dest

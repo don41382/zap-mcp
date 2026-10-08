@@ -96,10 +96,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      # Attached to every release so .../releases/latest/download/install.sh
+      # always matches the latest binaries.
+      - name: Install scripts
+        run: cp scripts/install.sh scripts/install.ps1 dist/
 
       - name: Checksums
         run: cd dist && shasum -a 256 * > SHA256SUMS.txt

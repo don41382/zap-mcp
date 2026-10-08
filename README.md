@@ -45,17 +45,24 @@ run it in a terminal), it runs setup. Afterwards it runs as one small
 background service that keeps WhatsApp connected and that all Claude and
 Codex windows share.
 
-1. Download the file for your system from the [**Releases**](https://github.com/don41382/zap-mcp/releases/latest) page and unpack it:
+1. Quit Claude and Codex, then run one line in a terminal:
 
-   | System | File |
-   |---|---|
-   | Mac with Apple Silicon (M1 or newer) | `zap-mcp-aarch64-apple-darwin.tar.gz` |
-   | Mac with Intel | `zap-mcp-x86_64-apple-darwin.tar.gz` |
-   | Windows (64-bit) | `zap-mcp-x86_64-pc-windows-msvc.zip` |
+   **macOS** (Terminal):
+   ```sh
+   curl -fsSL https://github.com/don41382/zap-mcp/releases/latest/download/install.sh | sh
+   ```
 
-2. Quit Claude and Codex, then start `zap-mcp` (macOS: double-click it, or run `./zap-mcp`
-   in Terminal; Windows: double-click `zap-mcp.exe`). Setup walks you through
-   five steps:
+   **Windows** (PowerShell):
+   ```powershell
+   irm https://github.com/don41382/zap-mcp/releases/latest/download/install.ps1 | iex
+   ```
+
+   The script downloads the right build for your computer from the latest
+   release, checks it against the release's `SHA256SUMS.txt`, and starts the
+   guided setup. Because it's not a browser download, macOS Gatekeeper and
+   Windows SmartScreen don't block it.
+
+2. Setup walks you through five steps:
    1. **Disclaimer.** You must read and accept it to continue.
    2. **Install.** Copies the program to `~/.local/bin` (macOS) or
       `%LOCALAPPDATA%\Programs\zap-mcp` (Windows).
@@ -77,8 +84,8 @@ Codex windows share.
 
 3. Start Claude or Codex and ask something like *"What did I miss on WhatsApp today?"*
 
-**Updating or uninstalling:** start zap-mcp again (the new version, or the
-installed one). It detects the existing installation and offers:
+**Updating or uninstalling:** run the install line again (or start the
+installed `zap-mcp`). It detects the existing installation and offers:
 - **Update**: replaces the program and restarts the background service,
   keeping your settings, app registrations and WhatsApp link. Claude and
   Codex reconnect by themselves.
@@ -94,10 +101,20 @@ Codex, including Codex inside the ChatGPT app, works as described above.
 
 Run `zap-mcp status` at any time to see whether the service is running and WhatsApp is connected.
 
-If macOS says the app "cannot be opened because the developer cannot be
-verified", right-click it → Open. On Windows, SmartScreen may show "Windows
-protected your PC": click "More info" → "Run anyway". This only happens while
-releases aren't code-signed.
+<details>
+<summary><b>Manual download instead of the install script</b></summary>
+
+Download the archive for your system from the
+[Releases](https://github.com/don41382/zap-mcp/releases/latest) page
+(`zap-mcp-aarch64-apple-darwin.tar.gz` for Apple Silicon Macs,
+`zap-mcp-x86_64-apple-darwin.tar.gz` for Intel Macs,
+`zap-mcp-x86_64-pc-windows-msvc.zip` for Windows), unpack it and start
+`zap-mcp`. Releases are not code-signed, so for browser downloads macOS may say
+the app "cannot be opened because the developer cannot be verified"
+(right-click it → Open) and Windows SmartScreen may show "Windows protected
+your PC" ("More info" → "Run anyway").
+
+</details>
 
 <details>
 <summary><b>Commands / manual setup / other MCP clients</b></summary>
