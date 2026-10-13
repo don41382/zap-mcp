@@ -5,7 +5,7 @@
 # Downloads the release archive, verifies it against the release's
 # SHA256SUMS.txt and starts the guided setup, which installs zap-mcp to
 # %LOCALAPPDATA%\Programs\zap-mcp (or offers update / uninstall if it's
-# installed). Set $env:ZAP_MCP_VERSION = 'v0.2.2' to pick a specific release.
+# installed). Set $env:ZAP_MCP_VERSION = 'v0.3.0' to pick a specific release.
 
 & {
     $ErrorActionPreference = 'Stop'

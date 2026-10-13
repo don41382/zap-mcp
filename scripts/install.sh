@@ -6,7 +6,7 @@
 # Downloads the release archive for this Mac, verifies it against the
 # release's SHA256SUMS.txt and starts the guided setup, which installs
 # zap-mcp to ~/.local/bin (or offers update / uninstall if it's installed).
-# Set ZAP_MCP_VERSION=v0.2.2 to pick a specific release.
+# Set ZAP_MCP_VERSION=v0.3.0 to pick a specific release.
 set -eu
 
 REPO="don41382/zap-mcp"

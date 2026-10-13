@@ -33,6 +33,7 @@ with your own account only: no bulk, automated, or commercial messaging.
 | `search_messages` | Substring search across all chats or one chat |
 | `recent_messages` | Everything since a given time (default: last 24h) |
 | `send_message` | Send a text message. **Off unless you allow it during setup** (`allow_send` in `settings.json`) |
+| `send_image` | Send a local image file (JPEG, PNG, WebP, GIF) with an optional caption. Gated by the same `allow_send` setting |
 
 Media is listed by type and caption (`[image] menu`), not downloaded. Edits
 update the stored text; "delete for everyone" removes the stored text and keeps

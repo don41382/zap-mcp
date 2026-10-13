@@ -64,7 +64,7 @@ enum Command {
     },
     /// Background service: WhatsApp connection + MCP over HTTP on 127.0.0.1.
     Daemon {
-        /// Expose the send_message tool (also configurable in settings.json).
+        /// Expose the send_message and send_image tools (also configurable in settings.json).
         #[arg(long)]
         allow_send: bool,
         /// Start the daemon in the background and return immediately.

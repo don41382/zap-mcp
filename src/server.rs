@@ -14,7 +14,10 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use whatsapp_rust::media::{self, ImageOptions};
 use whatsapp_rust::prelude::*;
+use whatsapp_rust::wacore::download::MediaType;
+use whatsapp_rust::UploadOptions;
 
 use crate::store::{NewMessage, StoredMessage, Store};
 
@@ -80,6 +83,30 @@ pub struct SendParams {
     pub to: String,
     /// Message text.
     pub text: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SendImageParams {
+    /// Recipient: a chat name, a phone number with country code, or a JID.
+    pub to: String,
+    /// Absolute path to a local image file (JPEG, PNG, WebP or GIF).
+    pub path: String,
+    /// Optional caption shown under the image.
+    pub caption: Option<String>,
+}
+
+/// WhatsApp rejects images above 16 MB.
+const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
+
+fn image_mimetype(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return None,
+    })
 }
 
 // Tools return `Result<String, String>`: rmcp turns `Err` into a tool result
@@ -178,6 +205,7 @@ impl WhatsAppServer {
         let mut tool_router = Self::tool_router();
         if !allow_send {
             tool_router.remove_route("send_message");
+            tool_router.remove_route("send_image");
         }
         Self {
             store,
@@ -205,6 +233,60 @@ impl WhatsAppServer {
                 )))
             }
         }
+    }
+
+    /// Like `resolve_chat`, but a bare phone number that is not a known chat
+    /// yet is accepted directly.
+    fn resolve_recipient(&self, to: &str) -> Result<(Jid, String, Option<String>), String> {
+        let digits: String = to.chars().filter(|c| c.is_ascii_digit()).collect();
+        let is_phone = !digits.is_empty()
+            && to.chars().all(|c| c.is_ascii_digit() || " +-()".contains(c));
+        let (jid_str, name) = match self.resolve_chat(to) {
+            Ok(found) => found,
+            Err(_) if is_phone => (format!("{digits}@s.whatsapp.net"), None),
+            Err(e) => return Err(e),
+        };
+        let jid: Jid = jid_str
+            .parse()
+            .map_err(|e| invalid(format!("invalid JID {jid_str}: {e}")))?;
+        Ok((jid, jid_str, name))
+    }
+
+    /// Send `message` to `to` and archive it as `kind`/`text`, since our own
+    /// sends are not echoed back to this device.
+    async fn send_and_archive(
+        &self,
+        to: &str,
+        message: wa::Message,
+        kind: &str,
+        text: Option<String>,
+    ) -> ToolResult {
+        let client = &self.client;
+        let (jid, jid_str, name) = self.resolve_recipient(to)?;
+        let sent = client.send_message(jid, message).await.map_err(internal)?;
+
+        let own = client.pn().map(|j| j.to_non_ad().to_string());
+        let now = chrono::Utc::now().timestamp();
+        let _ = self.store.batch(|b| {
+            b.upsert_chat(&jid_str, None, jid_str.ends_with("@g.us"), Some(now))?;
+            b.insert_message(&NewMessage {
+                chat_jid: jid_str.clone(),
+                id: sent.message_id.clone(),
+                sender_jid: own,
+                sender_name: None,
+                from_me: true,
+                ts: now,
+                kind: kind.into(),
+                text,
+            })
+        });
+
+        text_result(format!(
+            "Sent to {} ({}), message id {}",
+            name.as_deref().unwrap_or(&jid_str),
+            sent.to,
+            sent.message_id
+        ))
     }
 }
 
@@ -333,48 +415,45 @@ impl WhatsAppServer {
         if p.text.trim().is_empty() {
             return Err(invalid("text must not be empty"));
         }
+        self.send_and_archive(&p.to, wa::Message::text(p.text.clone()), "text", Some(p.text))
+            .await
+    }
 
-        // A bare phone number may not be a known chat yet; allow it directly.
-        let digits: String = p.to.chars().filter(|c| c.is_ascii_digit()).collect();
-        let is_phone = !digits.is_empty()
-            && p.to.chars().all(|c| c.is_ascii_digit() || " +-()".contains(c));
-        let (jid_str, name) = match self.resolve_chat(&p.to) {
-            Ok(found) => found,
-            Err(_) if is_phone => (format!("{digits}@s.whatsapp.net"), None),
-            Err(e) => return Err(e),
-        };
-        let jid: Jid = jid_str
-            .parse()
-            .map_err(|e| invalid(format!("invalid JID {jid_str}: {e}")))?;
+    #[tool(description = "Send an image file on WhatsApp from the user's account, with an optional caption. Only call this when the user explicitly asked to send this exact image to this recipient.")]
+    async fn send_image(
+        &self,
+        Parameters(p): Parameters<SendImageParams>,
+    ) -> ToolResult {
+        let client = &self.client;
+        if !client.is_logged_in() {
+            return Err(invalid("WhatsApp is not linked; run `zap-mcp setup` in a terminal"));
+        }
+        let path = std::path::Path::new(&p.path);
+        let mimetype = image_mimetype(path).ok_or_else(|| {
+            invalid(format!("{:?} is not a supported image; use JPEG, PNG, WebP or GIF", p.path))
+        })?;
+        let size = std::fs::metadata(path)
+            .map_err(|e| invalid(format!("cannot read {:?}: {e}", p.path)))?
+            .len();
+        if size > MAX_IMAGE_BYTES {
+            return Err(invalid(format!("image is {size} bytes; WhatsApp allows at most 16 MB")));
+        }
+        let data = std::fs::read(path).map_err(|e| invalid(format!("cannot read {:?}: {e}", p.path)))?;
 
-        let sent = client
-            .send_message(jid, wa::Message::text(p.text.clone()))
+        let upload = client
+            .upload(data, MediaType::Image, UploadOptions::default())
             .await
             .map_err(internal)?;
-
-        // Our own sends are not echoed back to this device, so archive it here.
-        let own = client.pn().map(|j| j.to_non_ad().to_string());
-        let now = chrono::Utc::now().timestamp();
-        let _ = self.store.batch(|b| {
-            b.upsert_chat(&jid_str, None, jid_str.ends_with("@g.us"), Some(now))?;
-            b.insert_message(&NewMessage {
-                chat_jid: jid_str.clone(),
-                id: sent.message_id.clone(),
-                sender_jid: own,
-                sender_name: None,
-                from_me: true,
-                ts: now,
-                kind: "text".into(),
-                text: Some(p.text.clone()),
-            })
-        });
-
-        text_result(format!(
-            "Sent to {} ({}), message id {}",
-            name.as_deref().unwrap_or(&jid_str),
-            sent.to,
-            sent.message_id
-        ))
+        let caption = p.caption.filter(|c| !c.trim().is_empty());
+        let message = media::image_message(
+            upload,
+            ImageOptions {
+                caption: caption.clone(),
+                mimetype: Some(mimetype.into()),
+                ..Default::default()
+            },
+        );
+        self.send_and_archive(&p.to, message, "image", caption).await
     }
 }
 
