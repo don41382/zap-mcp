@@ -4,21 +4,45 @@
 use std::sync::Arc;
 
 use log::{info, warn};
+use whatsapp_rust::download::Downloadable;
 use whatsapp_rust::prelude::*;
 use whatsapp_rust::waproto::whatsapp::message::protocol_message::Type as ProtocolType;
 
-use crate::store::{Batch, NewMessage, Store};
+use crate::store::{Batch, MediaRef, NewMessage, Store};
 
 const STATUS_BROADCAST: &str = "status@broadcast";
 
-/// What we keep of a message: a kind tag plus human-readable text.
-enum Content {
-    Message { kind: &'static str, text: Option<String> },
+/// What we keep of a message: a kind tag plus human-readable text, and for
+/// media the CDN reference to download it later.
+pub enum Content {
+    Message {
+        kind: &'static str,
+        text: Option<String>,
+        media: Option<MediaRef>,
+    },
     Edit { id: String, text: String },
     Revoke { id: String },
 }
 
-fn describe(msg: &wa::Message) -> Option<Content> {
+fn media_ref(
+    media_type: &str,
+    d: &dyn Downloadable,
+    mimetype: Option<&str>,
+    file_name: Option<&str>,
+) -> Option<MediaRef> {
+    Some(MediaRef {
+        media_type: media_type.into(),
+        mimetype: mimetype.map(str::to_string),
+        file_name: file_name.map(str::to_string),
+        direct_path: d.direct_path()?.to_string(),
+        media_key: d.media_key().map(<[u8]>::to_vec),
+        file_sha256: d.file_sha256()?.to_vec(),
+        file_enc_sha256: d.file_enc_sha256().map(<[u8]>::to_vec),
+        file_length: d.file_length()?,
+    })
+}
+
+pub fn describe(msg: &wa::Message) -> Option<Content> {
     let m = msg.get_base_message();
 
     if let Some(p) = m.protocol_message.as_option() {
@@ -40,34 +64,41 @@ fn describe(msg: &wa::Message) -> Option<Content> {
         return None;
     }
 
-    let msg = |kind, text: Option<&str>| {
+    let with_media = |kind, text: Option<&str>, media| {
         Some(Content::Message {
             kind,
             text: text.filter(|t| !t.is_empty()).map(str::to_string),
+            media,
         })
     };
+    let msg = |kind, text| with_media(kind, text, None);
 
     if let Some(text) = m.text_content() {
         return msg("text", Some(text));
     }
     if let Some(img) = m.image_message.as_option() {
-        return msg("image", img.caption.as_deref());
+        let media = media_ref("image", img, img.mimetype.as_deref(), None);
+        return with_media("image", img.caption.as_deref(), media);
     }
     if let Some(v) = m.video_message.as_option().or(m.ptv_message.as_option()) {
-        return msg("video", v.caption.as_deref());
+        let media = media_ref("video", v, v.mimetype.as_deref(), None);
+        return with_media("video", v.caption.as_deref(), media);
     }
     if let Some(a) = m.audio_message.as_option() {
-        return msg(if a.ptt == Some(true) { "voice" } else { "audio" }, None);
+        let media = media_ref("audio", a, a.mimetype.as_deref(), None);
+        return with_media(if a.ptt == Some(true) { "voice" } else { "audio" }, None, media);
     }
     if let Some(d) = m.document_message.as_option() {
         let text = match (&d.file_name, &d.caption) {
             (Some(f), Some(c)) => Some(format!("{f}: {c}")),
             (f, c) => f.clone().or_else(|| c.clone()),
         };
-        return msg("document", text.as_deref());
+        let media = media_ref("document", d, d.mimetype.as_deref(), d.file_name.as_deref());
+        return with_media("document", text.as_deref(), media);
     }
-    if m.sticker_message.is_set() {
-        return msg("sticker", None);
+    if let Some(s) = m.sticker_message.as_option() {
+        let media = media_ref("sticker", s, s.mimetype.as_deref(), None);
+        return with_media("sticker", None, media);
     }
     if let Some(l) = m.location_message.as_option() {
         let text = [l.name.as_deref(), l.address.as_deref()]
@@ -171,8 +202,11 @@ fn apply(
     message: &wa::Message,
 ) -> rusqlite::Result<()> {
     match describe(message) {
-        Some(Content::Message { kind, text }) => {
+        Some(Content::Message { kind, text, media }) => {
             b.upsert_chat(chat, None, is_group, Some(ts))?;
+            if let Some(media) = &media {
+                b.insert_media(chat, id, media)?;
+            }
             b.insert_message(&NewMessage {
                 chat_jid: chat.to_string(),
                 id: id.to_string(),

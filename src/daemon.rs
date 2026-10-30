@@ -192,9 +192,11 @@ pub async fn run(paths: &Paths, allow_send_flag: bool) -> Result<()> {
 
     let shutdown = CancellationToken::new();
     let mcp = {
-        let (store, client) = (store.clone(), client.clone());
+        let (store, client, media) = (store.clone(), client.clone(), paths.media.clone());
         StreamableHttpService::new(
-            move || Ok(WhatsAppServer::new(store.clone(), client.clone(), allow_send)),
+            move || {
+                Ok(WhatsAppServer::new(store.clone(), client.clone(), allow_send, media.clone()))
+            },
             Arc::new(LocalSessionManager::default()),
             // Loopback Host only (default) and no browser Origin at all.
             StreamableHttpServerConfig::default()

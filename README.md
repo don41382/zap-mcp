@@ -33,9 +33,15 @@ with your own account only: no bulk, automated, or commercial messaging.
 | `search_messages` | Substring search across all chats or one chat |
 | `recent_messages` | Everything since a given time (default: last 24h) |
 | `send_message` | Send a text message. **Off unless you allow it during setup** (`allow_send` in `settings.json`) |
-| `send_image` | Send a local image file (JPEG, PNG, WebP, GIF) with an optional caption. Gated by the same `allow_send` setting |
+| `send_media` | Send a local file with an optional caption: photos (JPEG, PNG, WebP, GIF), MP4/3GP videos and audio (OGG/Opus, MP3, M4A, AAC, AMR) as media (up to 16 MB), anything else, or with `as_document`, as a document (up to 100 MB). Gated by the same `allow_send` setting |
+| `download_media` | Save the photo, video, voice note, audio, document or sticker of a message to a local file (default `~/.zap-mcp/media/`, or `save_dir`). Photos and stickers are also returned as images so Claude can look at them |
 
-Media is listed by type and caption (`[image] menu`), not downloaded. Edits
+Media is listed by type, caption and message id (`[image id=3EB0…] menu`).
+Files aren't downloaded until you ask: the archive only keeps the reference
+WhatsApp needs to fetch and decrypt them. WhatsApp's servers drop media after
+a while; `download_media` then asks your phone to upload it again, which only
+works while the phone is online and still has the file. Media archived by
+versions before 0.4 has no stored reference and can't be downloaded. Edits
 update the stored text; "delete for everyone" removes the stored text and keeps
 a `[deleted]` marker.
 
@@ -207,6 +213,7 @@ You can override the location with `--data-dir` or `ZAP_MCP_DATA_DIR`:
 - `session.db` holds the linked device's encryption keys. Anyone with this
   file can read and send your messages, so treat it like a password.
 - `messages.db` is the message archive (plain SQLite, unencrypted).
+- `media/` holds files you downloaded with `download_media`.
 - `settings.json` holds the port, access token, and `allow_send`.
 - `daemon.log` is the service log; `daemon.pid` and `session.lock` are runtime files.
 - `terms-accepted.txt` records when you accepted the disclaimer, and for which version.

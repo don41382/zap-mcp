@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_chat_ts ON messages (chat_jid, ts);
 CREATE INDEX IF NOT EXISTS messages_ts ON messages (ts);
+
+-- CDN reference for media messages, enough to download and decrypt the file
+-- later. Only the reference is kept; files are fetched on demand.
+CREATE TABLE IF NOT EXISTS media (
+    chat_jid        TEXT NOT NULL,
+    id              TEXT NOT NULL,
+    media_type      TEXT NOT NULL,
+    mimetype        TEXT,
+    file_name       TEXT,
+    direct_path     TEXT NOT NULL,
+    media_key       BLOB,
+    file_sha256     BLOB NOT NULL,
+    file_enc_sha256 BLOB,
+    file_length     INTEGER NOT NULL,
+    PRIMARY KEY (chat_jid, id)
+);
 "#;
 
 /// Display name for a chat: explicit chat/group name, then address-book name,
@@ -64,6 +80,30 @@ pub struct NewMessage {
     pub text: Option<String>,
 }
 
+/// Where a media file lives on WhatsApp's CDN and how to decrypt it.
+#[derive(Debug, Clone)]
+pub struct MediaRef {
+    /// `image`, `video`, `audio`, `document` or `sticker`.
+    pub media_type: String,
+    pub mimetype: Option<String>,
+    pub file_name: Option<String>,
+    pub direct_path: String,
+    pub media_key: Option<Vec<u8>>,
+    pub file_sha256: Vec<u8>,
+    pub file_enc_sha256: Option<Vec<u8>>,
+    pub file_length: u64,
+}
+
+/// A stored media reference plus what a re-upload request needs to know
+/// about its message.
+#[derive(Debug)]
+pub struct MediaHit {
+    pub chat_jid: String,
+    pub from_me: bool,
+    pub sender_jid: Option<String>,
+    pub media: MediaRef,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatSummary {
     pub jid: String,
@@ -76,12 +116,15 @@ pub struct ChatSummary {
 #[derive(Debug)]
 pub struct StoredMessage {
     pub chat_jid: String,
+    pub id: String,
     pub chat_name: Option<String>,
     pub sender: String,
     pub from_me: bool,
     pub ts: i64,
     pub kind: String,
     pub text: Option<String>,
+    /// Whether a downloadable media reference is stored for this message.
+    pub has_media: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,6 +307,50 @@ impl Store {
         Ok(out)
     }
 
+    /// Media references for a message id, optionally within one chat. Ids are
+    /// only unique per chat, so without one there may be several.
+    pub fn find_media(&self, id: &str, chat_jid: Option<&str>) -> Result<Vec<MediaHit>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT md.chat_jid, COALESCE(m.from_me, 0), m.sender_jid,
+                        md.media_type, md.mimetype, md.file_name, md.direct_path, md.media_key,
+                        md.file_sha256, md.file_enc_sha256, md.file_length
+                   FROM media md
+                   LEFT JOIN messages m ON m.chat_jid = md.chat_jid AND m.id = md.id
+                  WHERE md.id = ?1 AND (?2 IS NULL OR md.chat_jid = ?2)",
+            )?;
+            let rows = stmt.query_map(params![id, chat_jid], |r| {
+                Ok(MediaHit {
+                    chat_jid: r.get(0)?,
+                    from_me: r.get(1)?,
+                    sender_jid: r.get(2)?,
+                    media: MediaRef {
+                        media_type: r.get(3)?,
+                        mimetype: r.get(4)?,
+                        file_name: r.get(5)?,
+                        direct_path: r.get(6)?,
+                        media_key: r.get(7)?,
+                        file_sha256: r.get(8)?,
+                        file_enc_sha256: r.get(9)?,
+                        file_length: r.get::<_, i64>(10)? as u64,
+                    },
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Point a media reference at the new CDN path after a re-upload.
+    pub fn set_media_path(&self, chat_jid: &str, id: &str, direct_path: &str) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "UPDATE media SET direct_path = ?3 WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id, direct_path],
+            )
+            .map(|_| ())
+        })
+    }
+
     /// `filter` is a WHERE clause whose last positional parameter is the LIMIT.
     fn query_messages(
         &self,
@@ -273,10 +360,11 @@ impl Store {
         let limit_idx = params.len();
         self.with(|conn| {
             let sql = format!(
-                "SELECT m.chat_jid, {CHAT_NAME_SQL},
+                "SELECT m.chat_jid, m.id, {CHAT_NAME_SQL},
                         COALESCE(sc.full_name, sc.push_name, m.sender_name, m.sender_jid, ''),
-                        m.from_me, m.ts, m.kind, m.text
+                        m.from_me, m.ts, m.kind, m.text, md.id IS NOT NULL
                    FROM messages m
+                   LEFT JOIN media md ON md.chat_jid = m.chat_jid AND md.id = m.id
                    LEFT JOIN chats c ON c.jid = m.chat_jid
                    LEFT JOIN contacts ct ON ct.jid = m.chat_jid
                    LEFT JOIN contacts sc ON sc.jid = m.sender_jid
@@ -288,12 +376,14 @@ impl Store {
             let rows = stmt.query_map(params, |r| {
                 Ok(StoredMessage {
                     chat_jid: r.get(0)?,
-                    chat_name: r.get(1)?,
-                    sender: r.get(2)?,
-                    from_me: r.get(3)?,
-                    ts: r.get(4)?,
-                    kind: r.get(5)?,
-                    text: r.get(6)?,
+                    id: r.get(1)?,
+                    chat_name: r.get(2)?,
+                    sender: r.get(3)?,
+                    from_me: r.get(4)?,
+                    ts: r.get(5)?,
+                    kind: r.get(6)?,
+                    text: r.get(7)?,
+                    has_media: r.get(8)?,
                 })
             })?;
             rows.collect()
@@ -394,6 +484,11 @@ impl Batch<'_> {
         )?;
         self.tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [lid])?;
         self.tx.execute(
+            "UPDATE OR IGNORE media SET chat_jid = ?2 WHERE chat_jid = ?1",
+            [lid, pn],
+        )?;
+        self.tx.execute("DELETE FROM media WHERE chat_jid = ?1", [lid])?;
+        self.tx.execute(
             "UPDATE messages SET sender_jid = ?2 WHERE sender_jid = ?1",
             [lid, pn],
         )?;
@@ -425,6 +520,35 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// Store (or refresh: history sync may carry a newer CDN path) the media
+    /// reference of a message.
+    pub fn insert_media(&self, chat_jid: &str, id: &str, m: &MediaRef) -> rusqlite::Result<()> {
+        let chat = self.canonical(chat_jid)?;
+        self.tx.execute(
+            "INSERT INTO media (chat_jid, id, media_type, mimetype, file_name, direct_path,
+                                media_key, file_sha256, file_enc_sha256, file_length)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT (chat_jid, id) DO UPDATE SET
+                media_type = excluded.media_type, mimetype = excluded.mimetype,
+                file_name = excluded.file_name, direct_path = excluded.direct_path,
+                media_key = excluded.media_key, file_sha256 = excluded.file_sha256,
+                file_enc_sha256 = excluded.file_enc_sha256, file_length = excluded.file_length",
+            params![
+                chat,
+                id,
+                m.media_type,
+                m.mimetype,
+                m.file_name,
+                m.direct_path,
+                m.media_key,
+                m.file_sha256,
+                m.file_enc_sha256,
+                m.file_length as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn edit_message(&self, chat_jid: &str, id: &str, text: &str) -> rusqlite::Result<()> {
         let chat = self.canonical(chat_jid)?;
         self.tx.execute(
@@ -439,6 +563,10 @@ impl Batch<'_> {
         let chat = self.canonical(chat_jid)?;
         self.tx.execute(
             "UPDATE messages SET kind = 'deleted', text = NULL WHERE chat_jid = ?1 AND id = ?2",
+            params![chat, id],
+        )?;
+        self.tx.execute(
+            "DELETE FROM media WHERE chat_jid = ?1 AND id = ?2",
             params![chat, id],
         )?;
         Ok(())
@@ -534,6 +662,47 @@ mod tests {
         assert_eq!(s.find_chats("+49 151 12345678").unwrap()[0].jid, pn);
         assert_eq!(s.search("50% off_", None, None, None, 10).unwrap().len(), 1);
         assert!(s.search("50%x", None, None, None, 10).unwrap().is_empty());
+    }
+
+    fn media(path: &str) -> MediaRef {
+        MediaRef {
+            media_type: "image".into(),
+            mimetype: Some("image/jpeg".into()),
+            file_name: None,
+            direct_path: path.into(),
+            media_key: Some(vec![1; 32]),
+            file_sha256: vec![2; 32],
+            file_enc_sha256: Some(vec![3; 32]),
+            file_length: 1234,
+        }
+    }
+
+    #[test]
+    fn media_refs_follow_lid_folding_and_revokes() {
+        let s = temp_store();
+        let lid = "123@lid";
+        let pn = "4915112345678@s.whatsapp.net";
+        s.batch(|b| {
+            b.insert_message(&msg(lid, "a", 10, "photo"))?;
+            b.insert_media(lid, "a", &media("/old"))?;
+            b.insert_media(lid, "a", &media("/new"))?;
+            b.add_mapping(lid, pn)
+        })
+        .unwrap();
+
+        let found = s.find_media("a", None).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].chat_jid, pn);
+        assert_eq!(found[0].sender_jid.as_deref(), Some(pn));
+        assert_eq!(found[0].media.direct_path, "/new");
+        assert_eq!(found[0].media.media_key.as_deref(), Some(&[1; 32][..]));
+        s.set_media_path(pn, "a", "/reuploaded").unwrap();
+        assert_eq!(s.find_media("a", Some(pn)).unwrap()[0].media.direct_path, "/reuploaded");
+        assert!(s.messages(pn, None, None, 10).unwrap()[0].has_media);
+
+        s.batch(|b| b.revoke_message(pn, "a")).unwrap();
+        assert!(s.find_media("a", Some(pn)).unwrap().is_empty());
+        assert!(!s.messages(pn, None, None, 10).unwrap()[0].has_media);
     }
 
     #[test]

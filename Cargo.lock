@@ -3297,10 +3297,11 @@ dependencies = [
 
 [[package]]
 name = "zap-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "console",

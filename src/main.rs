@@ -64,7 +64,7 @@ enum Command {
     },
     /// Background service: WhatsApp connection + MCP over HTTP on 127.0.0.1.
     Daemon {
-        /// Expose the send_message and send_image tools (also configurable in settings.json).
+        /// Expose the send_message and send_media tools (also configurable in settings.json).
         #[arg(long)]
         allow_send: bool,
         /// Start the daemon in the background and return immediately.
@@ -106,6 +106,8 @@ pub(crate) struct Paths {
     settings: PathBuf,
     pid: PathBuf,
     log: PathBuf,
+    /// Default folder for downloaded media.
+    media: PathBuf,
 }
 
 impl Paths {
@@ -131,6 +133,7 @@ impl Paths {
             settings: dir.join("settings.json"),
             pid: dir.join("daemon.pid"),
             log: dir.join("daemon.log"),
+            media: dir.join("media"),
             daemon_lock: dir.join("daemon.lock"),
             waiting: dir.join("daemon.waiting"),
             dir,
